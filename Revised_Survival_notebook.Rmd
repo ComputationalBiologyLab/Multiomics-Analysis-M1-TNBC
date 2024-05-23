@@ -1,0 +1,744 @@
+---
+title: "Survival Estimation Code"
+output: html_notebook
+---
+
+First Part (TCGA Data Survival Testing)
+
+Libraries needed
+
+```{r}
+
+library(survival)
+library(survminer)
+library(gplots)
+library(plotly)
+library(dplyr)
+
+```
+
+Merge the 154 expression matrix with the TNBC_Meta
+
+```{r}
+# Load Gene Expression Data of the TCGA 154, tpm normalized, annotated with biomart (v110), duplicates removed, only A samples selected (same that was used for CIBERSORT)
+mrna_tpm_coding <- read.table("mrna_tpm_coding_154_v110_nd_avg_Asel.tsv", header = FALSE) 
+
+# Assigning the first row as col names, this action was made on two steps intentionally because the R converts the - to . in colnames
+mrna_tpm_coding <- mrna_tpm_coding[-1, , drop = FALSE] |> `colnames<-`(mrna_tpm_coding[1,])
+
+# Load Survival Metadata
+mrna_meta <- read.table("154_patients_survival.tsv", header = TRUE) # Survival data adapted from immunogenomic article
+
+# Adjust Gene Expression Data: Set Genes as Row Names
+row.names(mrna_tpm_coding) <- mrna_tpm_coding$Genes
+mrna_tpm_coding <- mrna_tpm_coding[,-1]
+
+# Transpose Gene Expression Data
+transposed_matrix <- t(mrna_tpm_coding)
+
+# Convert Transposed Matrix to DataFrame
+transposed_matrix <- as.data.frame(transposed_matrix)
+
+# Add Sample IDs as the First Column
+transposed_matrix <- cbind(Sample.ID = row.names(transposed_matrix), transposed_matrix)
+row.names(transposed_matrix) <- NULL
+
+# Merge Metadata with Transposed Matrix
+merged_expression_survival_raw <- merge(mrna_meta[, c("Sample.ID", "Time", "Event")], transposed_matrix, by = "Sample.ID")
+# Gene counts with survival data for each sample
+merged_expression_survival <- merged_expression_survival_raw # Will be further manipulated
+
+```
+
+Split by median
+
+```{r}
+
+#Initiate the vector that will be later filled with medians
+h <- numeric(length(colnames(merged_expression_survival)))
+  merged_expression_survival[,2]=as.numeric(merged_expression_survival[,2]) #in case they were read as characters
+  merged_expression_survival[,3]=as.numeric(merged_expression_survival[,3])
+
+
+#Calculate the median of each column (expression of a certain gene), and then with each median assign 1 for samples with values > median and 0 for samples with < median (cutoff)
+for (i in 4:length(colnames(merged_expression_survival))) {
+  merged_expression_survival[,i]=as.numeric(merged_expression_survival[,i])
+  h[i-3]=median(merged_expression_survival[,i])
+  merged_expression_survival[,i]= ifelse(merged_expression_survival[,i] > h[i-3], 1,0)
+}
+  
+  
+  
+```
+
+```{r}
+
+#Subsetting the columns(genes) from the merged_expression_survival with the (Up/Down mRNA significantly)
+
+
+#set the working directory for the up/down files, in case they were in another folder
+setwd("DEGs\\") #folder created by the main code
+
+mrna_upreg_macro=read.table("mrna_upreg_macro_118_lfc10.tsv",sep='\t',header=T) #I will test all the genes then I will subset what is needed
+mrna_downreg_macro=read.table("mrna_downreg_macro_118lfc10.tsv",sep='\t',header=T) #I will test all the genes then I will subset what is needed
+
+#Adjusting the dataframes
+mrna_upreg_macro$symbol=row.names(mrna_upreg_macro)
+mrna_downreg_macro$symbol=row.names(mrna_downreg_macro)
+
+
+#Split my survival matrix to (Activated Survival for the upreg genes) and (Silenced Survival for the downreg genes)
+
+activated_survival =merged_expression_survival[,match(mrna_upreg_macro$symbol,colnames(merged_expression_survival))]
+silenced_survival =merged_expression_survival[,match(mrna_downreg_macro$symbol,colnames(merged_expression_survival))]
+
+#Add the first 3 Columns of the sample IDs/ Survival to the data frame
+activated_survival=cbind(merged_expression_survival[,c(1,2,3)],activated_survival)
+silenced_survival=cbind(merged_expression_survival[,c(1,2,3)],silenced_survival)
+
+colnames(activated_survival)[c(1,2,3)]=c("ID","Time","Event")
+colnames(silenced_survival)[c(1,2,3)]=c("ID","Time","Event")
+
+```
+
+```{r}
+#Initiating two dataframes that will be later filled with logrank test p-values
+activated_genes_pvals <- data.frame(Gene = character(), P_value = numeric())
+silenced_genes_pvals <- data.frame(Gene = character(), P_value = numeric())
+
+```
+
+The log-rank test iterating from the 4th column (first gene) to the last column checking the prognostic p-value of each gene and plotting the corresponding k-m plot if its p-value is less than 0.05
+
+```{r}
+
+#Create a folder to create the plots there 
+dir.create("Prognostic_TCGA\\activated",recursive = TRUE)
+ #you have to select and run it with the below code one time !
+for(i in 4:ncol(activated_survival)){
+  if(i==4){setwd("Prognostic_TCGA\\activated")}
+  gene = survfit(Surv(Time, Event)~activated_survival[[i]], data=activated_survival)
+
+activated_genes_pvals[i-3, "Gene"] <- colnames(activated_survival)[i]
+
+
+activated_genes_pvals[i-3, "P_value"] <-  surv_pvalue(gene, data = activated_survival,method = "survdiff")$pval
+
+if(activated_genes_pvals[i-3, "P_value"] < 0.05) {
+plot = ggsurvplot(gene, xlim=c(0, 10), break.x.by = 1,
+       pval= TRUE, risk.table.title="",
+         legend.labs=c(paste("Low",colnames(activated_survival)[i]),paste("High",colnames(activated_survival)[i])), legend.title="Survival",  
+           surv.scale = "percent",
+           title="Gene Survival")
+ggsave(paste0(colnames(activated_survival)[i],"-prognostic", ".png"), plot$plot)}
+
+}
+
+  
+```
+
+The log-rank test iterating from the 4th column (first gene) to the last column checking the prognostic p-value of each gene and plotting the corresponding k-m plot if its p-value is less than 0.05
+
+```{r}
+dir.create("Prognostic_TCGA\\silenced",recursive = TRUE)
+
+for(j in 4:ncol(silenced_survival)){
+   if(j==4){setwd("Prognostic_TCGA\\silenced")}
+  gene = survfit(Surv(Time, Event)~silenced_survival[[j]], data=silenced_survival)
+  
+    silenced_genes_pvals[j-3, "Gene"] <- mrna_downreg_macro$symbol[j-3]
+  silenced_genes_pvals[j-3, "P_value"] <-  surv_pvalue(gene, data = silenced_survival,
+                                                       method = "survdiff")$pval
+  
+    if ( silenced_genes_pvals[j-3, "P_value"] < 0.05) {
+  
+ plot = ggsurvplot(gene, xlim=c(0, 10), break.x.by = 1,
+             pval= TRUE, risk.table.title="",
+             legend.labs=c(paste("Low",colnames(silenced_survival)[j]),paste("High",colnames(silenced_survival)[j])), legend.title="",  
+             surv.scale = "percent",
+             title="Gene Survival")
+  
+  ggsave(paste0(colnames(silenced_survival)[j],"-prognostic", ".png"), plot$plot)
+  
+  }
+  }
+
+
+
+```
+
+Intersecting the prognostically significant genes with the genes resulted from the intersections
+
+```{r}
+#Ordering Genes based on their p-value
+activated_genes_pvals=activated_genes_pvals[order(activated_genes_pvals$P_value),]
+silenced_genes_pvals=silenced_genes_pvals[order(silenced_genes_pvals$P_value),]
+
+
+activated_genes_pvals = activated_genes_pvals %>% filter(P_value < 0.05)
+silenced_genes_pvals = silenced_genes_pvals %>% filter(P_value < 0.05)
+
+
+
+
+#Intersection between DEMs and DEGs
+#Import the intersection tables previously made
+setwd("Intersections")
+
+Intersection_activated_DEGs_DMGs_0.1=read.table("Intersection_activatedDEGs_lfc1_DMGs87_0.1.tsv",sep='\t',header=T)
+Intersection_silenced_DEGs_DMGs_0.1=read.table("Intersection_silencedDEGs_lfc1_DMGs87_0.1.tsv",sep='\t',header=T)
+
+Prognostic_DMEGs_Activated  = na.omit(activated_genes_pvals[match(Intersection_activated_DEGs_DMGs_0.1$x,activated_genes_pvals$Gene),])
+Prognostic_DMEGs_Silenced =na.omit(silenced_genes_pvals[match(Intersection_silenced_DEGs_DMGs_0.1$x,silenced_genes_pvals$Gene),])
+  
+#Intersection between DEGs and DEMs
+setwd("Intersections")
+
+activated_intersected_DEGs_DEMs=read.table("activated_intersected_DEGs_lfc1_DEMs_iso_predicted_3'.tsv",sep='\t',header=T)
+silenced_intersected_DEGs_DEMs=read.table("silenced_intersected_DEGs_lfc1_DEMs_iso_predicted_3'.tsv",sep='\t',header=T)
+
+
+Prognostic_DEMTs_Activated  = na.omit(activated_genes_pvals[match(activated_intersected_DEGs_DEMs$x,activated_genes_pvals$Gene),])
+Prognostic_DMETS_Silenced =na.omit(silenced_genes_pvals[match(silenced_intersected_DEGs_DEMs$x,silenced_genes_pvals$Gene),])
+```
+
+```{r}
+
+setwd("Prognostic_TCGA")#it has to be run with the below so that the wd is changed
+write.csv(Prognostic_DEMTs_Activated, "Activated_Prognostic_DEGs_lfc10_DEMs_118_nocox.csv")
+write.csv(Prognostic_DMETS_Silenced, "Silenced_Prognostic_DEGs_lfc10_DEMs_118_nocox.csv")
+
+
+write.csv(Prognostic_DMEGs_Activated, "Activated_Prognostic_DEGs_lfc10_DMGs_118_nocox.csv")
+write.csv(Prognostic_DMEGs_Silenced, "Silenced_Prognostic_DEGs_lfc10_DMGs_118_nocox.csv")
+
+```
+
+---
+title: "Validation Dataset for M1"
+output: html_notebook
+---
+
+Install and Load GeoQuery
+
+```{r}
+#BiocManager::install("GEOquery")
+#BiocManager::install("affy")
+#install.packages('jetset')
+```
+
+```{r}
+library(GEOquery)
+library(affy)
+library(dplyr)
+library(tidyverse)
+library(survival)
+library(survminer)
+library(jetset)
+library(readxl)
+library(preprocessCore)
+# Check the version of GEOquery package
+print(packageVersion("GEOquery"))
+
+# Check the version of affy package
+print(packageVersion("affy"))
+
+# Check the version of dplyr package
+print(packageVersion("dplyr"))
+
+# Check the version of tidyverse package (which includes dplyr)
+print(packageVersion("tidyverse"))
+
+# Check the version of survival package
+print(packageVersion("survival"))
+
+# Check the version of survminer package
+print(packageVersion("survminer"))
+
+# Check the version of jetset package
+print(packageVersion("jetset"))
+
+# Check the version of readxl package
+print(packageVersion("readxl"))
+
+# Check the version of preprocessCore package
+print(packageVersion("preprocessCore"))
+
+```
+
+```{r}
+#Preparing the Geodataset
+# First you have to import the excel file provided by nucleic acid that has survival time, event and the sample IDs, It can be found in sheet 4 (GEO.os)
+
+GEO_Samples_TNBC=read_excel("TNBC_immunogenomic.xlsx",sheet="GEO.os")
+
+GEO_Samples_TNBC=GEO_Samples_TNBC[c(12:118),c(2,3,4)]
+colnames(GEO_Samples_TNBC)=c("ID","Time","Event")
+
+```
+
+Download the GEO Microarray expression of the TNBC dataset (validation)
+
+```{r}
+
+# get expression files with MAS5 normalization (showed better performance than MAS5)
+Geo_gse = getGEO("GSE58812")
+exprs_gse= Geo_gse[["GSE58812_series_matrix.txt.gz"]]@assayData[["exprs"]]
+feature_gse= Geo_gse[["GSE58812_series_matrix.txt.gz"]]@phenoData@data
+summary(as.numeric(feature_gse$`age at diag:ch1`))
+stat.desc(as.numeric(feature_gse$`age at diag:ch1`))
+describe()
+```
+
+Using the Jetset Package to choose the best representative probe for each gene (in case there are multiple probes for a single gene)
+
+```{r}
+
+# 1) Import the table provided on the Jetset website for the hgu.133 plus2 platform that we are using (you will find the file on the drive, or you can find it in that URL: https://services.healthtech.dtu.dk/services/jetset/ ) 
+jetset.hgu133=read.table("jetset.scores.hgu133plus2_3.4.0.csv",sep=",",header=T)
+
+
+# Subsetting only the probes that reflects best the rna expression quantification for multi-probed genes.
+true_jetset.hgu133=jetset.hgu133[jetset.hgu133$best==TRUE,]
+true_jetset.hgu133=true_jetset.hgu133[!duplicated(true_jetset.hgu133$symbol),] # removing probes with no symbols
+exprs_gse=exprs_gse[match(true_jetset.hgu133$probeset,row.names(exprs_gse)),]
+row.names(exprs_gse)=true_jetset.hgu133$symbol
+
+
+
+
+#Prepare the survival matrix
+exprs_gse=as.data.frame(exprs_gse)
+#Print tables
+write.table(exprs_gse,file="mrna_gse58812_normalized_msa5_107_TNBC.tsv",sep="\t",row.names = T, col.names = T) #exported for CIBERSORT Analysis
+# --> please run CIBERSORT from now to win time, settings : batch correction : off / quantile normalization : enabled / run absolute mode : on/ permutation= 100
+trans_exprs_gse=t(exprs_gse)
+trans_exprs_gse= normalize.quantiles(trans_exprs_gse,copy=TRUE,keep.names=T) # quantile normalization to the expression that will be used for gene survival analysis for consistency
+
+#Adding survival data at the beginning
+trans_exprs_gse=as.data.frame(trans_exprs_gse)
+trans_exprs_gse=cbind(ID=row.names(trans_exprs_gse),trans_exprs_gse)
+
+SurvivalMatrix58812=merge(GEO_Samples_TNBC,trans_exprs_gse,by="ID") # here you can notice that the time / event were imported as characters
+
+
+
+```
+
+Assigning 1 and 0 for each expression for a certain sample , according to (higher than median or lower)
+
+```{r}
+
+#Initializing a vector
+h=as.vector(NA)
+#Compare each column with its median and assign 1 and 0 respectively
+for (i in 4:length(colnames(SurvivalMatrix58812))) {
+  h[i-3]=median(SurvivalMatrix58812[,i])
+     SurvivalMatrix58812[i]= ifelse(SurvivalMatrix58812[,i]> h[i-3], 1,0)
+}
+
+
+```
+
+```{r}
+# The silenced or activated genes adapted from the previous survival analysis
+
+setwd("Prognostic_TCGA")
+Prognostic_DEMTs_Activated=read.csv("Activated_Prognostic_DEGs_lfc10_DEMs_118_nocox.csv")
+Prognostic_DMETS_Silenced=read.csv("Silenced_Prognostic_DEGs_lfc10_DEMs_118_nocox.csv")
+
+Prognostic_DMEGs_Activated= read.csv("Activated_Prognostic_DEGs_lfc10_DMGs_118_nocox.csv")
+Prognostic_DMEGs_Silenced= read.csv ("Silenced_Prognostic_DEGs_lfc10_DMGs_118_nocox.csv")
+
+
+
+```
+
+Adjusting the silenced genes that will be subsetted in the matrix
+
+```{r}
+
+#They results will seperate later but for now we will combine the DMETs with DMGEs
+silenced_prognostic_genes=rbind(Prognostic_DMETS_Silenced,Prognostic_DMEGs_Silenced)
+
+# Match the genes present in the geo microarray gene expression wit the silenced prognostic genes adapted from the RNA-SEQ platform
+
+silenced_prognostic_genes_matched=silenced_prognostic_genes[match(colnames(SurvivalMatrix58812),silenced_prognostic_genes$Gene),]
+silenced_prognostic_genes_matched=na.omit(silenced_prognostic_genes_matched)
+
+# Subset the silenced prognostic genes columns from the survival matrix
+silenced_survival <- SurvivalMatrix58812 %>%
+  dplyr::select(all_of(silenced_prognostic_genes_matched$Gene))
+
+
+#Add the survival data and ID related columns
+silenced_survival=cbind(ID=SurvivalMatrix58812$ID,
+                        Time=SurvivalMatrix58812$Time,
+                        Event=SurvivalMatrix58812$Event,
+                        silenced_survival)
+
+  
+#Ensure that the columns are numeric
+silenced_survival$Time=as.numeric(silenced_survival$Time)
+silenced_survival$Event=as.numeric(silenced_survival$Event)
+#Make an empty dataframe to contain the resulted output
+silenced_genes_pvals <- data.frame(Gene = character(), P_value = numeric())
+
+
+# Find the genes missing from the microarray gene panel and were present in the RNA-SEQ (for our own knowledge, no action will be taken)
+different_items_silenced <- setdiff(silenced_prognostic_genes$Gene, silenced_prognostic_genes_matched$Gene)
+sum(duplicated(silenced_prognostic_genes$Gene))
+```
+
+Adjusting the genes that will be subsetted from the matrix for the activated genes
+
+```{r}
+
+#They will be splitted later
+activated_prognostic_genes=rbind(Prognostic_DEMTs_Activated,Prognostic_DMEGs_Activated)
+
+# Match the genes present in the geo microarray gene expression wit the silenced prognostic genes adapted from the RNA-SEQ platform
+activated_prognostic_genes_matched <-   activated_prognostic_genes[match(colnames(SurvivalMatrix58812),activated_prognostic_genes$Gene),]
+#Remove any NAs present in the dataframe
+activated_prognostic_genes=na.omit(activated_prognostic_genes_matched)
+
+
+# Subset the survival matrix to the activated prognostic genes
+activated_survival <- SurvivalMatrix58812 %>%
+  dplyr::select(all_of(activated_prognostic_genes$Gene))
+
+
+# Adding the needed columns for the activated survival
+activated_survival=cbind(ID=SurvivalMatrix58812$ID,
+                         Time=SurvivalMatrix58812$Time,
+                         Event=SurvivalMatrix58812$Event,
+                         activated_survival)
+
+
+#Ensure proper column formats
+activated_survival$Time=as.numeric(activated_survival$Time)
+activated_survival$Event=as.numeric(activated_survival$Event)
+
+activated_genes_pvals <- data.frame(Gene = character(), P_value = numeric())
+
+
+# Find the genes missing from the microarray gene panel
+different_items_activated <- setdiff(activated_prognostic_genes$Gene, colnames(activated_survival))
+```
+
+Testing the p-value for all the silencing genes
+
+```{r}
+dir.create("GEOValidated\\silenced",recursive= TRUE)
+for(j in 4:ncol(silenced_survival)){
+  if(j==4){setwd("GEOValidated\\silenced")}
+
+  gene = survfit(Surv(Time, Event)~silenced_survival[[j]], data=silenced_survival)
+  
+
+
+  
+  silenced_genes_pvals[j-3, "Gene"] <- colnames(silenced_survival)[j]
+  silenced_genes_pvals[j-3, "P_value"] <-  surv_pvalue(gene, data = silenced_survival,
+                                                       method = "survdiff")$pval
+  
+  if ( silenced_genes_pvals[j-3, "P_value"] < 0.05) {
+  
+  plot = ggsurvplot(gene, xlim=c(0, 10), break.x.by = 1,
+             pval= TRUE, risk.table.title="",
+             legend.labs=c(paste("Low",colnames(silenced_survival)[j]),paste("High",colnames(silenced_survival)[j])), legend.title="",  
+             surv.scale = "percent",
+             title="Gene Survival")
+  
+  ggsave(paste(colnames(silenced_survival)[j],"-validated.png"), plot$plot)
+  
+}
+}
+```
+
+Testing the p-value for all the activating genes
+
+```{r}
+dir.create("GEOValidated\\activated",recursive=TRUE)
+for(j in 4:ncol(activated_survival)){
+    if(j==4){setwd("GEOValidated\\activated")}
+
+  gene = survfit(Surv(Time, Event)~activated_survival[[j]], data=activated_survival)
+  
+  activated_genes_pvals[j-3, "Gene"] <- colnames(activated_survival)[j]
+  activated_genes_pvals[j-3, "P_value"] <-  surv_pvalue(gene, data = activated_survival, method = "survdiff")$pval
+  
+ if ( activated_genes_pvals[j-3, "P_value"] < 0.05) {
+  
+  plot = ggsurvplot(gene, xlim=c(0, 10), break.x.by = 1,
+             pval= TRUE, risk.table.title="",
+             legend.labs=c(paste("Low",colnames(activated_survival)[j]),paste("High",colnames(activated_survival)[j])), legend.title="",  
+             surv.scale = "percent",
+             title=paste0(colnames(activated_survival)[j]))
+  
+  ggsave(paste0(colnames(activated_survival)[j],"-validated",".png"), plot$plot)
+  
+  }
+}
+
+
+```
+
+```{r}
+
+#Ordering Genes based on their p-value
+activated_genes_pvals=activated_genes_pvals[order(activated_genes_pvals$P_value),]
+silenced_genes_pvals=silenced_genes_pvals[order(silenced_genes_pvals$P_value),]
+
+activated_genes_pvals=activated_genes_pvals[activated_genes_pvals$P_value<0.05,]
+silenced_genes_pvals=silenced_genes_pvals[silenced_genes_pvals$P_value<0.05,]
+
+
+#Exporting Results
+
+Validated_DMEGs_Activated  = na.omit(activated_genes_pvals[match(Prognostic_DMEGs_Activated$Gene,activated_genes_pvals$Gene),])
+Validated_DMEGs_Silenced=na.omit(silenced_genes_pvals[match(Prognostic_DMEGs_Silenced$Gene,silenced_genes_pvals$Gene),])
+
+
+Validated_DEMTs_Activated  = na.omit(activated_genes_pvals[match(Prognostic_DEMTs_Activated$Gene,activated_genes_pvals$Gene),])
+Validated_DMETS_Silenced =na.omit(silenced_genes_pvals[match(Prognostic_DMETS_Silenced$Gene,silenced_genes_pvals$Gene),])
+
+
+setwd("GEOValidated")
+write.csv(Validated_DEMTs_Activated, "Validated_Activated_DEGs_lfc10_DEMs_118_93_nocox.csv")
+write.csv(Validated_DMETS_Silenced, "Validated_Silenced_DEGs_lfc10_DEMs_118_93_nocox.csv")
+
+
+write.csv(Validated_DMEGs_Activated, "Validated_Activated_DEGs_lfc10_DMGs_118_93_nocox.csv")
+write.csv(Validated_DMEGs_Silenced, "Validated_Silenced_DEGs_lfc10_DMGs_118_93_nocox.csv")
+
+```
+
+To calculate the survival significance of M1 in GSE58812 dataset
+
+```{r}
+
+ciber_107 = read.csv("cibersort_mrna_gse_107_msa5_nobatch.csv") #no batch correction, settings adjusted for microarray
+
+#Assign a cutoff values for the samples with more than 0.05 of p-value to be removed
+ciber_107= ciber_107[ciber_107$P.value<0.05,]
+
+#initialization a cutoff matrix
+Cutoff_matrix= ciber_107[,1:23] #choosing the immune-cells' column only
+
+#For loop to assign the high = 1 and low = 0 and in the cutoff = ' middle' for the 22 immune cells based on mean +- 0.25std cutoff formula
+
+for (cell in 2:23) {
+   mean_ciber_107 = mean(ciber_107[,cell]) #calculate the mean for the iterated column
+  sd_ciber_107 = sd(ciber_107[,cell])      #calculate the standard deviation for the iterated column
+  
+  
+ Cutoff_matrix[cell] = ifelse( ciber_107[,cell] > mean_ciber_107 + 0.25 * sd_ciber_107, "1", ifelse(ciber_107[,cell] < mean_ciber_107 - 0.25 * sd_ciber_107, "0", "middle"))
+}
+
+CIBERSORT_visualization <- tidyr::gather(ciber_107[2:23], key = "ImmuneCell", value = "Est.Abundance")
+
+# Bottom Left
+library(ggplot2)
+gse58812_abundance=ggplot(CIBERSORT_visualization, aes(x=ImmuneCell, y=Est.Abundance, fill=ImmuneCell)) + 
+    geom_boxplot(alpha=0.3) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = "Immune Cells", y = "Absolute Abundance", title = "CIBERSORTx Estimated Abundance")
+ggsave("gse58812_abundance.png",gse58812_abundance,width =15 , height =8 )
+
+```
+
+Testing the prognostic effect of each immune cell on the overall survival
+
+```{r}
+
+#Merging the Abundance of Immune Cells with the Survival Data of the Patients present in TNBC_meta
+survival_ciber_107_matrix= merge( x = GEO_Samples_TNBC, y= Cutoff_matrix , by.x = "ID", by.y="Mixture")
+survival_ciber_107_matrix[,2]=as.numeric(survival_ciber_107_matrix[,2])
+survival_ciber_107_matrix[,3]=as.numeric(survival_ciber_107_matrix[,3])
+
+# intiating a data frame to store the p-values of the k-m logrank test fore each immune cell
+immune_cells_pvals = data.frame(immune_cell = character(), P_value = numeric())
+# naive CD4-Tcell was removed as most of the values lied in the cutoff
+survival_ciber_107_matrix=survival_ciber_107_matrix[,-8]
+#assigning a new matrix to store the matrix before any manipulation that will be later used in the for loop
+survival_ciber_107_matrix_original=survival_ciber_107_matrix 
+
+# The survival analysis, iterating on each immune cell and printing the cells' p-values
+setwd("GSE58812_Immune_kaplan\\")
+for(i in 4:ncol(survival_ciber_107_matrix)){
+  #returning to the original matrix because at each loop different rows (samples) will be removed
+  survival_ciber_107_matrix=survival_ciber_107_matrix_original 
+  #remove the samples assigned in the cutoff range (middle)
+  survival_ciber_107_matrix= survival_ciber_107_matrix[which(survival_ciber_107_matrix[,i]!="middle"),]
+  
+  #the survfit function calculate the k-m and p-value for each immune cell
+  immune_cell = survfit(Surv(Time, Event)~survival_ciber_107_matrix[[i]], data=survival_ciber_107_matrix)
+  
+  #assigning the p-value to the dataframe pvals. (i-3) because the dataframe starts with the 4th column as immune cell and it is recorded as the first row in the pval dataframe
+  
+  #assigning the name of the immune cell
+  immune_cells_pvals[i-3, "immune_cell"] = colnames(survival_ciber_107_matrix)[i]
+  #assigning the corresponding p-value for it
+  immune_cells_pvals[i-3, "P_value"] =  surv_pvalue(immune_cell, data = survival_ciber_107_matrix, method = "survdiff")$pval
+  
+
+  immune_cells_pvals[i-3, "Median(OS)_High"] =median(survival_ciber_107_matrix$Time[which(survival_ciber_107_matrix[i]=="1")])
+  immune_cells_pvals[i-3, "Median(OS)_Low"] =median(survival_ciber_107_matrix$Time[which(survival_ciber_107_matrix[i]=="0")])
+
+   #ploting and saving a k-m plot to make sure whether it is a good or poor prognostic indicator
+   if (length(unique(survival_ciber_107_matrix[[i]]))>1){
+       immune_cells_cox <- coxph(Surv(Time, Event) ~ survival_ciber_107_matrix[[i]], data = survival_ciber_107_matrix)
+       immune_cells_pvals[i-3, "HR"] =exp(coef(immune_cells_cox))
+immune_cells_pvals[i-3, "coefficients"] =coef(immune_cells_cox)
+
+     
+     plot = ggsurvplot(immune_cell, xlim=c(0, 10), break.x.by = 1,
+                    pval= TRUE, risk.table.title="",
+        legend.labs=c(paste("Low ", colnames(survival_ciber_107_matrix)[i]),
+                      paste("High ", colnames(survival_ciber_107_matrix)[i])),                            legend.title="",  
+                      surv.scale = "percent",
+                      title="Immune Cell Survival")
+  
+     ggsave(paste(colnames(survival_ciber_107_matrix)[i], ".png"), plot$plot)}
+  else{
+    print("next")}
+  
+  }
+  
+
+write.table(immune_cells_pvals,"immune_cells_pvals_GSE_107.tsv",sep='\t')
+
+```
+
+Supplementary (not essential in the pipeline)
+
+Correlation with Immune Cells Abundance in TCGA
+
+```{r}
+tpm_154= read.table ("mrna_tpm_coding_154_v110_nd_avg_Asel.tsv",sep='\t',header = TRUE )
+immune_154= read.table ("mrna_tpm_coding_154_v110_nd_avg_Asel_infiltration_results.csv",sep=',', header = T)
+ciber_154 = read.csv("CIBERSORTx_v110_154_nodup_avg_Asel.csv")
+
+
+# Selecting the rows with the genes that are prognostically significant
+Validated_Genes_TPM=merge(tpm_154,data.frame(Genes=rbind(activated_genes_pvals,silenced_genes_pvals)[,1]), by="Genes")
+#Validated_Genes_TPM=merge(x=tpm_154, y=mrna_upreg_macro, by.x =c("Genes"),by.y=0 )
+#Validated_Genes_TPM=merge(x=tpm_154, y=rbind(Intersection_activated_DEGs_DMGs_0.1,Intersection_silenced_DEGs_DMGs_0.1,activated_intersected_DEGs_DEMs,silenced_intersected_DEGs_DEMs), by.x =c("Genes"),by.y="x" )
+
+# Assigning the rownames as the genes and tranposing the expression so that each column is a gene
+Validated_Genes_TPM=Validated_Genes_TPM[!duplicated(Validated_Genes_TPM$Genes),]
+Validated_Genes_TPM <- Validated_Genes_TPM[, -1, drop = FALSE] |> `rownames<-`(Validated_Genes_TPM[, "Genes"])
+Validated_Genes_TPM = t(Validated_Genes_TPM)
+
+
+
+# Adjusting the Immune Cells Dataframe
+immune_154=immune_154[c(13,65),] # selecting the M1 rows in quantiseq and xcell
+
+row.names(immune_154)=paste0(immune_154$method,immune_154$cell_type) # setting a descriptive row name
+immune_154=immune_154[,-c(1,2)]  # removing redundant columns
+immune_154 = t(immune_154) #transposing the matrix so that the immune scores are columns
+
+# Check the samples order
+all( row.names(immune_154) == row.names(Validated_Genes_TPM))
+all( row.names(immune_154) == ciber_154$Mixture) # It returns false
+
+# Check the samples order after replacing - with . in Ciber_154
+ciber_154$Mixture = gsub("-",".",ciber_154$Mixture)
+ciber_154= ciber_154[match(row.names(immune_154),ciber_154$Mixture),]
+
+all( row.names(immune_154) == ciber_154$Mixture) # It should return true
+
+immune_154 = cbind(immune_154,CiberM1=ciber_154$Macrophages.M1)
+
+
+# For loop to check the correlation between gene expression in TPM and M1 abundance
+
+    #make an empty dataframe
+
+Correlation_Values_TPM <- data.frame(Gene = character(), cor_quanti = numeric(),cor_xcell = numeric(),cor_ciber = numeric(), avg = numeric())
+
+
+    # Run the for loop
+for (i in 1:length(colnames(Validated_Genes_TPM))) {
+   
+  Correlation_Values_TPM[i,"Gene"]=colnames(Validated_Genes_TPM)[i]
+  Correlation_Values_TPM[i,"cor_quanti"]=cor(Validated_Genes_TPM[,i],immune_154[,1],method= "spearman")
+  Correlation_Values_TPM[i,"cor_xcell"]=cor(Validated_Genes_TPM[,i],immune_154[,2],method= "spearman")
+  Correlation_Values_TPM[i,"cor_ciber"]=cor(Validated_Genes_TPM[,i],immune_154[,3],method= "spearman")
+  Correlation_Values_TPM[i,"avg"]= mean(as.numeric(Correlation_Values_TPM[i,c(2:4)]))
+
+
+}
+
+write.table(Correlation_Values_TPM,"Correlation_Values_intersected_118_93_nocox.tsv",sep='\t',row.names=F)
+```
+
+Correlation with Immune Cells Abundance in GEO
+
+```{r}
+
+immune_107= read.table ("mrna_gse58812_normalized_rma_107_TNBC_infiltration_results.csv",sep=',', header = T) #calculated based on the expression values,by preomics
+ciber_107 = read.csv("cibersort_mrna_gse_107_msa5_nobatch.csv") #no batch correction, settings adjusted for microarray
+
+
+# Selecting the rows with the genes that are prognostically significant
+
+Validated_Genes_GSE=merge(x=exprs_gse, y=Correlation_Values_TPM[,c(1,2,3)], by.x =0,by.y="Gene" )
+
+Validated_Genes_GSE <- Validated_Genes_GSE[, -c((ncol(Validated_Genes_GSE)-1),ncol(Validated_Genes_GSE))] #removing the last two columns (p-value/coxph)
+ 
+# Assigning the rownames as the genes and tranposing the expression so that each column is a gene
+row.names(Validated_Genes_GSE) = Validated_Genes_GSE$Row.names
+Validated_Genes_GSE=Validated_Genes_GSE[,-1]
+Validated_Genes_GSE = t(Validated_Genes_GSE)
+
+
+
+# Adjusting the Immune Cells Dataframe
+immune_107=immune_107[c(13,65),] # selecting the M1 rows in quantiseq and xcell
+
+row.names(immune_107)=paste0(immune_107$method,immune_107$cell_type) # setting a descriptive row name
+immune_107=immune_107[,-c(1,2)]  # removing redundant columns
+immune_107 = t(immune_107) #transposing the matrix so that the immune scores are columns
+
+# Check the samples order
+all( row.names(immune_107) == row.names(Validated_Genes_GSE))
+all( row.names(immune_107) == ciber_107$Mixture) # It returns false
+
+# Check the samples order after replacing - with . in ciber_107
+ciber_107$Mixture = gsub("-",".",ciber_107$Mixture)
+ciber_107= ciber_107[match(row.names(immune_107),ciber_107$Mixture),]
+
+all( row.names(immune_107) == ciber_107$Mixture) # It should return true
+
+immune_107 = cbind(immune_107,CiberM1=ciber_107$Macrophages.M1)
+
+
+# For loop to check the correlation between gene expression in TPM and M1 abundance
+
+    #make an empty dataframe
+
+Correlation_Values_GSE <- data.frame(Gene = character(), cor_quanti = numeric(),cor_xcell = numeric(),cor_ciber = numeric(), avg = numeric())
+
+
+    # Run the for loop
+for (i in 1:length(colnames(Validated_Genes_GSE))) {
+   
+  Correlation_Values_GSE[i,"Gene"]=colnames(Validated_Genes_GSE)[i]
+  Correlation_Values_GSE[i,"cor_quanti"]=cor(Validated_Genes_GSE[,i],immune_107[,1],method= "spearman")
+  Correlation_Values_GSE[i,"cor_xcell"]=cor(Validated_Genes_GSE[,i],immune_107[,2],method= "spearman")
+  Correlation_Values_GSE[i,"cor_ciber"]=cor(Validated_Genes_GSE[,i],immune_107[,3],method= "spearman")
+  Correlation_Values_GSE[i,"avg"]= mean(as.numeric(Correlation_Values_GSE[i,c(2:4)]))
+
+
+  
+}
+
+
+Correlation_Values_GSE_Ciber=Correlation_Values_GSE[,c(1,4)]
+write.table(Correlation_Values_GSE_Ciber[order(Correlation_Values_GSE_Ciber$cor_ciber, decreasing = TRUE),],"Correlation_Values_GSE_Intersected_93_118_nocox.tsv",sep='\t',row.names=F)
+
+
+```

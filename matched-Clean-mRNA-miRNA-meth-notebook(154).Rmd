@@ -1,0 +1,1714 @@
+---
+title: "TNBCPAPER_ESTIMATE_DESEQ2"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r message=TRUE, warning=FALSE}
+#installation
+BiocManager::install("DESeq2")
+BiocManager::install("PCAtools")
+BiocManager::install("ComplexHeatmap")
+BiocManager::install("TCGAbiolinks")
+BiocManager::install("EnhancedVolcano")
+BiocManager::install("org.Hs.eg.db")
+BiocManager::install("miRBaseConverter")
+install.packages("IHW")
+install.packages("apeglm")
+install.packages("gplots")
+install.packages("pheatmap")
+install.packages("RColorBrewer")
+install.packages("dplyr")
+install.packages("DT")
+install.packages("readxl")
+install.packages("ggVennDiagram")
+BiocManager::install("IHW")
+
+
+```
+
+```{r message=TRUE, warning=FALSE}
+#libraries
+library(DESeq2)
+library(RColorBrewer)
+library(pheatmap)
+library(gplots)
+library(ggplot2)
+library(biomaRt)
+library(PCAtools)
+library(DT)
+library(IHW)
+library(apeglm)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(TCGAbiolinks)
+library(dplyr)
+library(org.Hs.eg.db)
+library(miRBaseConverter)
+library(survival)
+library(survminer)
+library(stringr)
+library(readxl)
+library(pastecs)
+
+```
+
+Case IDs provided for the TNBC cancer patients present in TCGA-BRCA
+based on the selection criteria (ER- , PR-, and HER2- (by IHC or FISH)).
+
+```{r}
+# You will find the Barcode_DS loaded in the rdata file, and it is adapted from
+#Liu, C., Li.(2022).Immunogenomic landscape and the survival data is added to it
+TNBC_meta = read_excel("TNBC_immunogenomic.xlsx", col_names = TRUE , , skip = 1)
+colnames(TNBC_meta)[1]="Case.ID"
+#The following two cases don't have a miRNA Seq (according to the GDC) ("TCGA-A2-A0YE"-"TCGA-AR-A0TU") therefore they will be excluded
+TNBC_meta <- TNBC_meta[!(TNBC_meta$Case.ID %in% c("TCGA-A2-A0YE", "TCGA-AR-A0TU")),]
+write.table(TNBC_meta,"TNBC_Meta_154.tsv",sep='\t')
+```
+
+Preparing and investigating the mRNA samples available for the 154
+patients' case ID previously provided. STAR-Counts is a recent alignment
+technique provided by the GDC platform.
+
+```{r}
+
+mrna_query = GDCquery(project = "TCGA-BRCA",
+                data.category = "Transcriptome Profiling",
+                data.type = "Gene Expression Quantification",
+                       workflow.type = "STAR - Counts",
+                      experimental.strategy = "RNA-Seq",
+                       barcode=TNBC_meta$Case.ID) #This has all 154 samples
+
+#Getting the patients barcodes
+sample_ids = getResults(mrna_query)
+library(TCGAbiolinks)
+```
+
+Choosing the samples with 01 identifiers, which reflect a primary tumor
+sample. In addition, for the patients who had two samples (01A / 01B),
+the 01A was prefered and selected due to its freezing storage technique.
+
+```{r}
+
+#Adjusting the column names of the fetched data
+colnames(sample_ids)=c("Case.ID","Sample.ID")
+
+# Grab the patients with 01A Samples
+sample_ids_primary= sample_ids[grep("01A",sample_ids$Sample.ID),]
+# Then add the patients with 01B samples
+sample_ids_primary=rbind(sample_ids_primary, sample_ids[grep("01B",sample_ids$Sample.ID),])
+# If there are duplicates in case ID, then remove the 01B samples 
+sample_ids_primary=sample_ids_primary[!duplicated(sample_ids_primary$Case.ID),]
+
+#Add a sample column in the TNBC_meta matrix
+TNBC_meta=merge(sample_ids_primary,TNBC_meta, by="Case.ID")
+
+```
+
+Download the mRNA data for the 154 selected TNBC samples.
+
+```{r}
+
+mrna_query = GDCquery(project = "TCGA-BRCA",
+                data.category = "Transcriptome Profiling",
+                data.type = "Gene Expression Quantification",
+                       workflow.type = "STAR - Counts",
+                      experimental.strategy = "RNA-Seq",
+                       barcode=TNBC_meta$Sample.ID) #This has all 154 samples
+
+GDCdownload(mrna_query,directory=
+                      "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
+mrna_df=GDCprepare(mrna_query, directory=
+                      "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
+
+#GDCdownload(mrna_query)
+#mrna_df=GDCprepare(mrna_query)
+
+```
+
+Store the expression file in an RDS for later access
+
+```{r}
+#saveRDS(mrna_df,file="TNBC_mRNA_data_Asel.rds")
+#mrna_df=readRDS("TNBC_mRNA_data_Asel.rds")
+```
+
+Grab from the mrna_df both; the tpm normalization for later usage in
+CIBERSORT fraction estimation and the survival tests, and the raw
+(un-normalized) data for later usage in DESEQ2
+
+```{r}
+mrna_tpm = as.data.frame(assays(mrna_df)$tpm_unstrand)
+mrna_raw = as.data.frame(assay(mrna_df))
+```
+
+removing the extra letters at each column name to(sample ID)
+
+```{r}
+#colnames(mrna_df)
+## tidy matrix colnames
+
+delim_fn = function(x, n, i){
+  do.call(c, lapply(x, function(X)
+    paste(unlist(strsplit(X, "-"))[(n+1):(i)], collapse = "-")))
+}
+
+colnames(mrna_tpm) = delim_fn(x = colnames(mrna_tpm), n = 0, i = 4)
+colnames(mrna_raw) = delim_fn(x = colnames(mrna_raw), n = 0, i = 4)
+
+
+```
+
+Remove The Version number from the dataframes' ENSGID by the following
+code. Moreover, remove the PAR-Y genes because all our samples are
+adapted from female patients who lack a Y-chromosome.
+
+```{r}
+
+removeVersion = function(ids){
+  return(unlist(lapply(stringr::str_split(ids, "[.]"), "[[",1)))
+}
+
+mrna_tpm=mrna_tpm[!duplicated(removeVersion(rownames(mrna_tpm))),]
+rownames(mrna_tpm)=removeVersion(rownames(mrna_tpm))
+
+
+mrna_raw=mrna_raw[!duplicated(removeVersion(rownames(mrna_raw))),]
+rownames(mrna_raw)=removeVersion(rownames(mrna_raw))
+
+
+```
+
+
+Convert the ENSGIDs (rownames) to HGNC symbols (for tpm/raw) that can be
+latter recognized by the CIBERSORTx web-service. v110 was used, which is
+the latest version at the time of the analysis
+
+```{r}
+
+#First retrive the HGNC symbols for mrna_tpm for CIBERSORT
+
+mart = useEnsembl(biomart = "ensembl", dataset = "hsapiens_gene_ensembl",version= 110)
+mrna_attributes = getBM(attributes=c("external_gene_name",
+                                      "ensembl_gene_id",
+                                      "gene_biotype"),
+                         filters = c("ensembl_gene_id"),
+                         values = (rownames(mrna_tpm)),
+                         mart = mart)
+
+#Removing any non protein coding genes
+mrna_attributes = mrna_attributes[which(mrna_attributes$gene_biotype == "protein_coding"),]
+#Removing any protein coding gene that doesn't have a HGNC symbol
+mrna_attributes = mrna_attributes[which(mrna_attributes$external_gene_name != ""),]
+
+#Selecting from the tpm matrix the rows that met the two criteria previously mentioned
+mrna_tpm_coding = mrna_tpm[which(rownames(mrna_tpm) %in% mrna_attributes$ensembl_gene_id),]
+
+#Adding the gene symbols column to the matrix
+mrna_tpm_coding=cbind(Genes=mrna_attributes$external_gene_name,mrna_tpm_coding)
+
+#Secondly, retrieve the HGNC symbols for mRNA_raw for DESEQ2 and further analysis
+mrna_raw_coding = mrna_raw[which(rownames(mrna_raw) %in% mrna_attributes$ensembl_gene_id),]
+
+#Adding the gene symbols column to the matrix
+mrna_raw_coding=cbind(Genes=mrna_attributes$external_gene_name,mrna_raw_coding)
+
+
+
+```
+
+Remove duplicate HGNC symbols arising from different ENSGID by choosing
+the gene names with the highest overall mean expression across the
+samples.
+
+```{r}
+
+gene_duplicates = mrna_tpm_coding$Genes[duplicated(mrna_tpm_coding$Genes)] #the gene names of duplicates
+
+# Choosing from the duplicate name, the gene with the highest overall expression avg (tpm/raw)
+
+for (dup in gene_duplicates) {
+  
+  # Identify rows with the same gene name
+duplicates_indices = which(mrna_tpm_coding[, 1] == dup)
+
+# Calculate row means for each gene (skip the first column as it contains the gene symbols)
+duplicates_means = rowMeans(mrna_tpm_coding[duplicates_indices,-1])
+
+# Find the row with the minimum mean to remove
+min_mean_duplicate = which.min(duplicates_means)
+
+# remove the row with the lowest mean
+mrna_tpm_coding = mrna_tpm_coding[-duplicates_indices[min_mean_duplicate], ]
+mrna_raw_coding = mrna_raw_coding[-duplicates_indices[min_mean_duplicate], ]
+
+}
+
+#exporting the table as tsv file with txt extension to cibersortx
+dir.create("Cibersortx\\",recursive = TRUE)
+setwd("Cibersortx")
+write.table(mrna_tpm_coding, file = "mrna_tpm_coding_154_v110_nd_avg_Asel.txt", sep = "\t", quote = FALSE, row.names = FALSE) 
+
+
+```
+
+Automated CIBERSORT Cutoff for all the immune cells
+
+```{r}
+#Add the location of the fraction file adapted from cibersort
+
+setwd("Cibersortx") #Add the file to this created folder
+
+# Reading the file
+CIBERSORT= read.csv("CIBERSORTx_v110_154_nodup_avg_Asel.csv", header = TRUE)
+
+#Assign a cutoff values for the samples with more than 0.05 of p-value to be removed
+CIBERSORT= CIBERSORT[CIBERSORT$P.value<=0.05,]
+
+#initialization a cutoff matrix
+Cutoff_matrix= CIBERSORT[,1:23] #choosing the immune-cells' column only
+
+#For loop to assign the high = 1 and low = 0 and in the cutoff = ' middle' for the 22 immune cells based on mean +- 0.25std cutoff formula
+
+for (cell in 2:23) {
+   mean_cibersort = mean(CIBERSORT[,cell]) #calculate the mean for the iterated column
+  sd_cibersort = sd(CIBERSORT[,cell])      #calculate the standard deviation for the iterated column
+  
+  
+ Cutoff_matrix[cell] = ifelse( CIBERSORT[,cell] > mean_cibersort + 0.25 * sd_cibersort, "1", ifelse(CIBERSORT[,cell] < mean_cibersort - 0.25 * sd_cibersort, "0", "middle"))
+}
+# Box Plot
+
+
+CIBERSORT_visualization <- tidyr::gather(CIBERSORT[2:23], key = "Feature", value = "Value")
+
+library(ggplot2)
+tcga_abundance=ggplot(CIBERSORT_visualization, aes(x=Feature, y=Value, fill=Feature)) + 
+    geom_boxplot(alpha=0.3) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = "Immune Cells", y = "Estimated Abundance", title = "CibersortX Estimated Abundance for TCGA-TNBC")+
+  scale_y_continuous(limits = c(0, 1.3))  # Setting x-axis limits
+
+ggsave("tcga_abundance.png",tcga_abundance,width =15 , height =8 )
+```
+
+
+```{r}
+# Demographics
+library(tidyverse)
+install.packages("finalfit")
+library(finalfit)
+colnames(TNBC_meta)
+testing_meta= TNBC_meta
+testing_meta=mrna_meta
+
+# Specify explanatory variables of interest
+explanatory <- c("Age", 
+                "StageGroup","Time","Event")
+table_TCGA= testing_meta %>% 
+  summary_factorlist("macro",explanatory,
+                      na_include=TRUE)
+
+TNBC_meta$StageGroup = str_remove_all(TNBC_meta$Stage, "[A-C]")
+TNBC_meta$StageGroup[TNBC_meta$StageGroup=="unknow"] = "Stage II" # Assigning stage II for an unassigned sample, based on the ajcc 8th edition
+
+
+install.packages("Hmisc")
+library(Hmisc)
+#statistics
+summary(TNBC_meta)
+description_Of_TNBC=stat.desc(TNBC_meta)
+describe(TNBC_meta$StageGroup)
+check=describe(race_TNBC$race)
+
+race_TNBC <- read.delim("clinical.tsv")
+race_TNBC = merge(TNBC_meta,race_TNBC[,c("case_submitter_id","race")],by.x="Case.ID",by.y="case_submitter_id")
+race_TNBC = race_TNBC[!duplicated(race_TNBC$Case.ID),]
+
+race_TNBC= race_TNBC[,c("Sample.ID","race")]
+# Demographics for high and low M1
+library(stringr)
+mrna_meta$StageGroup = str_remove_all(mrna_meta$Stage, "[A-C]")
+mrna_meta$StageGroup[mrna_meta$StageGroup=="unknow"] = "Stage II"
+mrna_meta= merge(mrna_meta,race_TNBC,by="Sample.ID")
+mrna_meta_high=mrna_meta[which(mrna_meta$macro=="High"),]
+mrna_meta_low=mrna_meta[which(mrna_meta$macro=="Low"),]
+
+summary(mrna_meta[which(mrna_meta$macro=="High"),])
+summary(mrna_meta[which(mrna_meta$macro=="Low"),])
+description_Of_TNBC=stat.desc(mrna_meta_high)
+description_Of_TNBC=stat.desc(mrna_meta_low)
+
+describe(mrna_meta_high$StageGroup)
+describe(mrna_meta_low$StageGroup)
+
+describe(mrna_meta_high$race)
+describe(mrna_meta_low$race)
+
+
+
+sessionInfo()
+```
+
+Testing the prognostic effect of each immune cell on the overall
+survival
+
+```{r}
+library(dplyr)
+library(survival)
+library(survminer)
+
+dir.create("Immune_Cells_Plots",recursive=TRUE)
+setwd("Immune_Cells_Plots")
+#Merging the Abundance of Immune Cells with the Survival Data of the Patients present in TNBC_meta
+colnames(Cutoff_matrix)[1]="Sample.ID"
+colnames(TNBC_meta)[c(3,4)]= c("Time","Event")
+survival_cibersort_matrix = inner_join( x = TNBC_meta[,c(2,3,4)], y= Cutoff_matrix , by = "Sample.ID")
+
+
+# intiating a data frame to store the p-values of the k-m logrank test fore each immune cell
+immune_cells_pvals = data.frame(immune_cell = character(), P_value = numeric())
+# naive CD4-Tcell was removed as most of the values lied in the cutoff
+survival_cibersort_matrix=survival_cibersort_matrix[,-8]
+#assigning a new matrix to store the matrix before any manipulation that will be later used in the for loop
+survival_cibersort_matrix_original=survival_cibersort_matrix 
+
+# The survival analysis, iterating on each immune cell and printing the cells' p-values
+for(i in 4:ncol(survival_cibersort_matrix)){
+  
+  #returning to the original matrix because at each loop different rows (samples) will be removed
+  survival_cibersort_matrix=survival_cibersort_matrix_original 
+  #remove the samples assigned in the cutoff range (middle)
+  survival_cibersort_matrix= survival_cibersort_matrix[which(survival_cibersort_matrix[,i]!="middle"),]
+  
+  #the survfit function calculate the k-m and p-value for each immune cell
+  immune_cell = survfit(Surv(Time, Event)~survival_cibersort_matrix[[i]], data=survival_cibersort_matrix)
+  immune_cells_cox <- coxph(Surv(Time, Event) ~ survival_cibersort_matrix[[i]], data = survival_cibersort_matrix)
+
+  #assigning the p-value to the dataframe pvals. (i-3) because the dataframe starts with the 4th column as immune cell and it is recorded as the first row in the pval dataframe
+  
+  #assigning the name of the immune cell
+  immune_cells_pvals[i-3, "immune_cell"] = colnames(survival_cibersort_matrix)[i]
+  
+  #assigning the corresponding p-value for it
+  immune_cells_pvals[i-3, "P_value"] =  surv_pvalue(immune_cell, data = survival_cibersort_matrix, method = "survdiff")$pval
+
+  immune_cells_pvals[i-3, "Median(OS)_High"] =median(survival_cibersort_matrix$Time[which(survival_cibersort_matrix[i]=="1")])
+  immune_cells_pvals[i-3, "Median(OS)_Low"] =median(survival_cibersort_matrix$Time[which(survival_cibersort_matrix[i]=="0")])
+immune_cells_pvals[i-3, "HR"] =exp(coef(immune_cells_cox))
+immune_cells_pvals[i-3, "coefficients"] =coef(immune_cells_cox)
+
+  #ploting and saving a k-m plot to make sure whether it is a good or poor prognostic indicator
+  
+    plot = ggsurvplot(immune_cell, xlim=c(0, 10), break.x.by = 1,
+         pval= TRUE, risk.table.title="",
+           legend.labs=c(paste("Low ", colnames(survival_cibersort_matrix)[i]), paste("High ", colnames(survival_cibersort_matrix)[i])), legend.title="",  
+             surv.scale = "percent",
+             title="Immune Cell Survival")
+  
+     ggsave(paste(colnames(survival_cibersort_matrix)[i], ".png"), plot$plot)}
+
+write.table(survival_cibersort_matrix_original[, c(1, 2, 3)], "154_patients_survival.tsv", sep = '\t', row.names = FALSE, quote = FALSE)
+
+write.table(immune_cells_pvals, "immune_cells_pvals_TCGA.tsv", sep = '\t', row.names = FALSE, quote = FALSE)
+
+```
+
+
+
+
+Saving the M1 patients cutoff with the macrophage m1, the only one that
+showed a prognostic p-value \< 0.05
+
+```{r}
+#resetting any subsetting from the matrix
+survival_cibersort_matrix=survival_cibersort_matrix_original
+#getting only the high and low patients
+mrna_meta= survival_cibersort_matrix[which(survival_cibersort_matrix[,"Macrophages.M1"]!="middle"),c("Sample.ID","Macrophages.M1")]
+
+#creating an mrna_meta file, grabbing only the patients with m1 values outside the cutoff range & adding the macrophage assignment (high/low) for each patient
+
+mrna_meta=merge(TNBC_meta,mrna_meta,by="Sample.ID")
+colnames(mrna_meta)[17]="macro"
+
+#assigning high and low instead of 1 and 0
+mrna_meta[,"macro"] = ifelse(mrna_meta[,"macro"] == 1, "High", "Low")
+
+  
+```
+
+Adapting the 118 samples for mRNA-raw analysis using DESEQ2
+
+```{r}
+#Adjust the columns of mRNA_raw to match the metafile because both need to be aligned in order to perform the DESEQ2 Analysis
+
+#Replacing the rownames from ENSGIDs to Gene symbols (format prefered by deseq2)
+row.names(mrna_raw_coding)=mrna_raw_coding[,1]
+mrna_raw_coding=mrna_raw_coding[,-1]
+
+#Subsetting the samples with M1 values
+mrna_raw_coding=mrna_raw_coding[,match(mrna_meta$Sample.ID,colnames(mrna_raw_coding))]
+
+
+all(mrna_meta$Sample.ID==colnames(mrna_raw_coding))   #safety check that the matching was done properly
+
+```
+
+Identifying the differentially expressed genes between high and low M1
+patients
+
+```{r}
+library(DESeq2)
+## DESeq2 Analysis Macrophage
+mrna_dds_macro = DESeqDataSetFromMatrix(
+  countData=round(mrna_raw_coding), 
+  colData = mrna_meta, 
+  design = ~ macro) # the design refers to the column identifying the high/low to compare
+
+#setting the ref to Low means that the logfold change will be (High M1 value / Low M1 value)
+mrna_dds_macro$macro = relevel(mrna_dds_macro$macro, ref = "Low") 
+
+#The actual analysis
+mrna_dds_macro = DESeq(mrna_dds_macro) 
+
+
+#These normalized counts line will be later needed for the heatmap
+normCounts = counts(mrna_dds_macro, normalized=TRUE)
+
+## DESeq2 results (getting the results based on p-value 0.05)
+mrna_res_macro=results(mrna_dds_macro , alpha = 0.05, lfcThreshold = 0, contrast = c("macro", "High", "Low")) # the log-fold change will be later assigned
+
+# Check the statistics
+summary(mrna_res_macro)
+# Contain all the differential expression values 
+mrna_res_macro.df= as.data.frame(mrna_res_macro)
+mrna_res_macro.df$genes=row.names(mrna_res_macro.df)
+
+```
+
+The following chunk is dedicated for storing mrna-deseq object
+
+```{r}
+saveRDS(mrna_dds_macro,"mrna_dds_macro_118_Asel.rds") 
+#mrna_dds_macro=readRDS("mrna_dds_macro_118_Asel.rds")
+
+```
+
+Preparing the data for extracting the upregulated and downregulated
+genes
+
+```{r}
+#Filtering any gene with abs log2foldchange less than 1.5 and adjusted p-value more than 0.05
+
+DEGs_macro = filter(mrna_res_macro.df, padj < 0.05 ,abs(log2FoldChange) > 1)
+  
+
+#Specifying which genes are the upregulated and storing them in a seperate variable
+mrna_upreg_macro = filter(mrna_res_macro.df, padj < 0.05 ,log2FoldChange > 1)
+
+#Specifying which genes are the downregulated and storing them in a seperate variable
+mrna_downreg_macro = filter(mrna_res_macro.df, padj < 0.05 ,log2FoldChange < -1)
+
+
+#adjusting their order before saving them as txt file (not necessarly used later)
+mrna_upreg_macro= mrna_upreg_macro[order(mrna_upreg_macro$log2FoldChange, decreasing = TRUE),]
+mrna_downreg_macro= mrna_downreg_macro[order(mrna_downreg_macro$log2FoldChange),]
+
+dir.create("Survival\\DEGs")
+setwd("Survival\\DEGs")
+write.table(mrna_upreg_macro[,c(2,6)],"mrna_upreg_macro_118_lfc10.tsv", sep= "\t",row.names = TRUE, col.names = TRUE)
+write.table(mrna_downreg_macro[,c(2,6)], "mrna_downreg_macro_118lfc10.tsv", sep= "\t",row.names = TRUE, col.names = TRUE)
+
+```
+
+Visualization of Graphs
+
+```{r}
+library(DESeq2)
+library(ggplot2)
+library(stringr)
+# The PCA 
+
+# Transform the normalized counts (by deseq2 size factors) to shrink genes with low expression and high dispersion 
+
+#blind=TRUE should be used for comparing samples in a manner unbiased by prior information on samples, for example to perform sample QA (quality assurance).
+vst_macro = vst(mrna_dds_macro, blind = TRUE)
+
+
+#Classifying patients into old,young and the stages without letters 
+vst_macro$Age_Groups=ifelse(vst_macro$Age>60,"old","young") 
+vst_macro$StageGroup = str_remove_all(vst_macro$Stage, "[A-C]")
+vst_macro$StageGroup[vst_macro$StageGroup=="unknow"] = "Stage II" # Assigning stage II for an unassigned sample, based on the ajcc 8th edition
+
+
+# Plot the PCA of PC1 and PC2
+plotPCA(vst_macro, intgroup= c("Age_Groups")) #capitalization is important
+#ggsave("PCA_Age_Groups_DEGs.png")
+
+plotPCA(vst_macro, intgroup= c("StageGroup")) #capitalization is important
+#ggsave("PCA_Stage_Groups_DEGs.png")
+
+plotPCA(vst_macro, intgroup= c("race")) #capitalization is important
+#ggsave("PCA_race_Groups_DEGs.png")
+
+plotPCA(vst_macro, intgroup= c("macro")) #capitalization is important
+#ggsave("PCA_macro_Groups_DEGs.png")
+
+# The most prestigious volcano plot ever
+
+EnhancedVolcano(mrna_res_macro.df, x= "log2FoldChange", y="padj", lab =row.names(mrna_res_macro.df) , pCutoff = 5e-2, FCcutoff = 1)
+ggsave("Volcano_plot_Lfc1.png")
+
+# The most prestigious heatmap plot ever
+#first step is to make the annotation column
+    #Ordering them from high (all high together) and (all low together), the previous ordering was just matching
+
+mrna_meta_ordered_macro= mrna_meta[order(mrna_meta$macro),]
+normCounts_ordered= normCounts[,match(mrna_meta_ordered_macro$Sample.ID,colnames(normCounts))]
+
+all(colnames(normCounts_ordered)== mrna_meta_ordered_macro$Sample.ID) #ensuring proper matching
+
+#Creating the actual annotation dataframe
+annotation=as.data.frame(mrna_meta$macro, row.names = mrna_meta$Sample.ID)
+colnames(annotation)="macro Status"
+
+#Sub-setting the genes with the threshold previously made (DEGs)
+signi = subset(mrna_res_macro.df, padj<= 0.05)
+signi = subset(signi, abs(log2FoldChange) >= 1)
+
+#Merging the normalized count dataframe with the
+allsig = merge(normCounts_ordered, signi , by = 0) # 0 means merge by rownames
+allsig = allsig [order(allsig$log2FoldChange,decreasing = T),] # order the genes based on the logfold change
+sigCounts= allsig[,c(2:119)] #choose only the columns with sample counts
+
+
+pheatmap::pheatmap(sigCounts, scale = "row", show_rownames = F , cluster_cols = F, cluster_rows = F , annotation_col = annotation , show_colnames = F , main = "Differentially Expressed Genes in TNBC based on M1",col = bluered(100))
+
+```
+
+---
+title: "TNBCPAPER_M1_DESEQ2_miR"
+output: html_notebook
+---
+
+```{r}
+#assigning a new variable under the name of miR_meta for coherency, but it has the same data as mrna_meta
+miR_meta= mrna_meta 
+```
+
+Adapting the miRNA expression in the isomir form that includes the 3p
+and 5p annotation needed for the miRwalk target indentification
+analysis.
+
+```{r}
+
+mirna_query = GDCquery(project = "TCGA-BRCA",
+                  data.category = "Transcriptome Profiling",
+          data.type = "Isoform Expression Quantification",
+          experimental.strategy = "miRNA-Seq",
+          barcode=miR_meta$Sample.ID) # the 118 samples already splitted
+
+GDCdownload(mirna_query)
+miR_iso_df = GDCprepare(mirna_query)
+
+```
+
+Code to transform the isoforms matrix into an expression-like (count
+table) matrix
+
+```{r}
+
+
+# 1) sum all counts per barcode for same MIMAT ID and remove rows with NA values
+miR_iso_df %>%
+  group_by(barcode,miRNA_region) %>%
+  summarise_at(vars(read_count),sum, na.rm = TRUE) -> miR_iso_df
+
+# 2) delete all MIMAT IDs NOT being 'mature'
+miR_iso_df = miR_iso_df[miR_iso_df$"miRNA_region" != "precursor" & miR_iso_df$"miRNA_region" != "stemloop" & miR_iso_df$"miRNA_region" != "unannotated", ]
+
+
+# 3) now split per sample ID (barcode); a list is generated
+splitted = split.data.frame(miR_iso_df, miR_iso_df$"barcode")
+
+# define the columns to keep in each one of the 118 dataframes in the list.
+keep = c("miRNA_region", "read_count")
+splitted = lapply(splitted, function(x) x[keep])
+
+# to make the column of the readcounts unique, add/paste barcode name to column "read_count"
+for (i in 1:length(splitted)) {
+    names(splitted[[i]])[2] = paste( names(splitted[[i]])[2], names(splitted[i]), sep=".")
+    }
+
+# Make the actual count table, a 'full join' is performed since the union of counts is required,
+# and if there are no matching values in any of the tables full_join returns <N A> for the one missing.
+
+splitted %>%
+    Reduce(function(dtf1,dtf2) full_join(dtf1,dtf2,by="miRNA_region"), .) -> count.table
+
+# set all NA's to zero. It is assumed the isoforms that
+# are not listed/present in a sample have zero counts.
+count.table[is.na(count.table)] = 0
+
+# to increase readability; rename/remove "read_count." from column names,
+# and 'mature,' from row names
+count.table = as.data.frame(count.table)
+colnames(count.table) = sub("read_count.", "", colnames(count.table))
+count.table[,1] =  sub("mature,", "",count.table[,1])
+row.names(count.table)=count.table[,1]
+count.table=count.table[,-1]
+miR_df= count.table
+```
+
+Remove the extra letters after each sample name
+
+```{r}
+
+colnames(miR_df) = delim_fn(x = colnames(miR_df), n = 0, i = 4)
+saveRDS(miR_df)
+```
+
+```{r}
+## DESeq2 Analysis macro
+
+  miRNA_dds_macro = DESeqDataSetFromMatrix(miR_df, colData = miR_meta, design = ~ macro) 
+  miRNA_dds_macro$macro = relevel(miRNA_dds_macro$macro, ref = "Low") #Low M1 is the denominator
+  miRNA_dds_macro = DESeq(miRNA_dds_macro)
+  resultsNames(miRNA_dds_macro ) #this code returns the first result, indicating the nominator and the second is the denominator, which is again specified in the contrast
+  
+  ## DESeq2 results  # lfcthershold will be compensated in a later filter
+miRNA_res_macro=results(miRNA_dds_macro, alpha = 0.05, lfcThreshold = 0, contrast = c("macro", "High", "Low"))
+
+#Checking the number of DEMs before the 0.6 filter
+summary(miRNA_res_macro)
+
+#Normalized Counts
+normCounts = counts(miRNA_dds_macro, normalized=TRUE)
+
+#Converting the differential expression results from DESEQ2 into a dataframe
+miRNA_res_macro.df=as.data.frame(miRNA_res_macro)
+
+```
+
+Some analysis for the DEMs that will be further fed into miRwalk
+
+```{r}
+
+#getting the upregulated and downregulated DEMs with the abs(0.6) filter
+
+DEMs_macro = filter(miRNA_res_macro.df, padj < 0.05 , abs(log2FoldChange) >= 0.6) 
+miRNA_upreg = filter(miRNA_res_macro.df , padj<0.05, log2FoldChange >= 0.6)
+miRNA_downreg = filter(miRNA_res_macro.df , padj<0.05, log2FoldChange <= -0.6)
+
+
+#These tables will be used in miRwalk to predict their mRNA targets
+dir.create("Mirwalk")
+setwd("Mirwalk")
+write.table(miRNA_upreg, file = "miRNA_upreg_iso_118.tsv",sep = "\t",  row.names = T , col.names = F)
+write.table(miRNA_downreg, file = "miRNA_downreg_iso_118.tsv",sep = "\t",  row.names = T , col.names = F)
+
+
+```
+
+```{r}
+#§§§
+# Visualization for macro
+library(DESeq2)
+library(stringr)
+# The PCA 
+
+# Transform the normalized counts to shrink genes with low expression and high dispersion
+vst_miRNA_dds_macro = varianceStabilizingTransformation (miRNA_dds_macro, blind = TRUE) #VST function will not work because of few row means with value greater than 5
+
+# Plot the PCA of PC1 and PC2
+
+#Classifying patients into old,young and the stages without letters 
+vst_miRNA_dds_macro$Age_Groups=ifelse(vst_miRNA_dds_macro$Age>60,"old","young") 
+vst_miRNA_dds_macro$StageGroup = str_remove_all(vst_miRNA_dds_macro$Stage, "[A-C]")
+vst_miRNA_dds_macro$StageGroup[vst_miRNA_dds_macro$StageGroup=="unknow"] = "Stage II" # Assigning stage II for an unassigned sample
+
+# Plot the PCA of PC1 and PC2
+plotPCA(vst_miRNA_dds_macro, intgroup= c("Age_Groups")) #capitalization is important
+ggsave("PCA_Age_Groups_DEMs.png",height=7,width=7)
+
+plotPCA(vst_miRNA_dds_macro, intgroup= c("StageGroup")) #capitalization is important
+
+ggsave("PCA_Stage_Groups_DEMs.png",height=7,width=7)
+
+plotPCA(vst_miRNA_dds_macro, intgroup= c("race")) #capitalization is important
+
+ggsave("PCA_race_Groups_DEMs.png",height=7,width=7)
+
+# The most prestigious volcano plot ever
+EnhancedVolcano(miRNA_res_macro.df, x= "log2FoldChange", y="padj", lab = row.names(miRNA_res_macro.df), pCutoff = 5e-2, FCcutoff = 0.6)
+ggsave("volcano_lfc0.6_isomiRs.png", width = 10, height = 12)
+
+
+
+
+# The most prestigious heatmap plot ever 
+
+#first step is to make the annotation column #§§§
+    #Ordering them from high (all high together) and (all low together), the previous ordering was just matching
+
+miR_meta_ordered_macro= miR_meta[order(miR_meta$macro),]
+normCounts_ordered= normCounts[,match(miR_meta_ordered_macro$Sample.ID,colnames(normCounts))]
+
+
+#subsetting the results DEMs with our criteria
+signi_miR_macro = filter(miRNA_res_macro.df, padj<= 0.05, abs(log2FoldChange) >= 0.6 )
+
+#Merging the normalized count dataframe with the DEMs
+allsig = merge(normCounts_ordered, signi_miR_macro , by = 0) # 0 means merge by rownames
+allsig = allsig [order(allsig$log2FoldChange,decreasing = T),] # order them from high to low
+
+#Subset only the column with symbol and samples
+allsig= allsig[,1:119]
+
+#Adjust the row names as MIMAT
+rownames(allsig)= allsig$Row.names
+#remove the first column of MIMATs
+sigCounts=allsig[,-1]
+
+#Creating the annotation column
+annotation_miR=as.data.frame(miR_meta$macro, row.names = miR_meta$Sample.ID)
+
+pheatmap::pheatmap(sigCounts, scale = "row", show_rownames = F , cluster_cols = F, cluster_rows = F , annotation_col = annotation_miR , show_colnames = F , main = "Differentially Expressed miRNA in TNBC based on M1",col = bluered(100))
+
+
+```
+
+---
+title: "meth_M1_Updated"
+output: html_notebook
+---
+
+Here we load the libraries that may be needed
+
+```{r}
+#Libraries you need to install
+#BiocManager::install("ChAMP")
+#library
+library(DESeq2)
+library(RColorBrewer)
+library(pheatmap)
+library(gplots)
+library(biomaRt)
+library(PCAtools)
+library(DT)
+library(IHW)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(TCGAbiolinks)
+library(dplyr)
+library(EnhancedVolcano)
+library(org.Hs.eg.db)`
+library(minfi)
+library("chAMP")
+library(bumphunter)
+library(minfiData)
+library(sesame)
+
+```
+
+Download the methylome samples available in the 154 patients (out of the
+154 TNBC present in both mRNA and miRNA, only 112 possess methylome
+profiles)
+
+```{r}
+#TCGA-Biolink package is needed
+
+meth_query = GDCquery(
+    project = "TCGA-BRCA",
+    data.category = "DNA Methylation",
+    data.type = "Masked Intensities",
+    platform = "Illumina Human Methylation 450", # The best available platform for methylation
+    barcode= colnames(mrna_tpm))
+
+
+GDCdownload(meth_query)
+
+#This chunk doesn't need a GDCprepare, otherwise it will normalize the data by itself, which is not needed here. The downloaded data will be read and normalized by chAMP later
+    
+```
+
+113 Sample IDs were subsetted from the CIBESORTx Fractions Matrix and
+then the cutoff (+-stdev x 0.25), resulting in 87 samples divided into
+low and high M1, which will be latter used for Differential methylation
+analysis
+
+```{r}
+match.file.cases = getResults(meth_query,cols=c("cases","file_name"))
+
+#remove the extra identification letters at the end of the case IDs
+
+match.file.cases$cases = delim_fn(x =match.file.cases$cases, n = 0, i = 4)
+meth_IDs= unique(match.file.cases$cases,TRUE)
+```
+
+
+Each Sample has two raw files (green and red) corresponding, you can
+connect the sample ID with the filename using the function getresult()
+(already prepared when retrieving the IDs)
+
+Prepare the CSV file methyl_pd (patient and disease state) needed for
+the chAMP package to access the idat files and assign them to their
+corresponding patients' ID
+
+```{r}
+
+# Preparing the methylation patients
+meth_IDs= data.frame(Sample.ID=meth_IDs)
+meth_meta =merge(mrna_meta, meth_IDs, by= "Sample.ID")
+meth_meta$macro= gsub("High",1,meth_meta$macro)
+meth_meta$macro= gsub("Low",0,meth_meta$macro)
+
+# Assign the directory in which the raw data of methylation was downloaded
+champ_directory = # set the directory 
+
+
+#removing duplicated sample names (The duplicates are present because each patient has two data files (green & red); however both will be read later no worries)
+unique_file.cases=match.file.cases[!duplicated(match.file.cases$cases),]
+#extracting the stem file name without _noid_Grn/Red.idat 
+unique_file.cases$file_name=gsub('_noid_Grn.idat',"",unique_file.cases$file_name)
+unique_file.cases$file_name=gsub('_noid_Red.idat',"",unique_file.cases$file_name)
+
+#converting it from 112 to the 87 samples that have high and low M1 (meth_meta)
+unique_file.cases=unique_file.cases[match(meth_meta$Sample.ID,unique_file.cases$cases),]
+# Confirming the Conversion
+all(unique_file.cases$cases==meth_meta$Sample.ID)
+
+#Creating a file called "pd" in which the needed metadata will be stored (later needed by chAMP)
+meth_pd=unique_file.cases
+colnames(meth_pd)[1]="Sample_Name"
+meth_pd$Sample_Plate=""
+meth_pd$Sample_Group=meth_meta$macro
+meth_pd$Pool_ID=""
+meth_pd$Project=""
+meth_pd$Sample_Well=""
+meth_pd$Sentrix_ID=unique_file.cases$file_name
+meth_pd$Sentrix_Position="noid"
+meth_pd=meth_pd[,-2]
+
+#export as CSV file in the same directory of the downloaded idat files
+# If you run the two lines together, the file will be exported to the setwd destination
+setwd(champ_directory)
+write.table(meth_pd,"meth_pd_87.csv",sep=',',row.names = F)
+```
+
+Run the chAMP package, Perform data loading (import+filteration), data
+normalization (using BMIQ), and finally the differential methylation
+
+```{r}
+#1 #Nehal: champ.load may still have NA values. Check
+myLoad = champ.load(champ_directory,arraytype="450K")
+#2
+myNorm = champ.norm(myLoad$beta,arraytype="450K",cores=5) # BMIQ --> Beta Version
+#3
+myDMP = champ.DMP(beta = myNorm,pheno=as.character(myLoad$pd$Sample_Group)) # Adjusted for high M1 / low M1
+myDMP=myDMP[["0_to_1"]]  # call the dataframe within the object
+
+```
+
+Filter the DMP based on their genomic location (promoter only) and their
+differences in beta values \|(meanB1-meanB2)\|\>0.2 and p-value \< 0.05
+
+```{r}
+#Nehal: why did we choose TSS|5'UTR|1stExon specifically? Did we mention in the manuscript?
+hypo_methylated=filter(myDMP,deltaBeta< -0.1, adj.P.Val < 0.05)
+Hyper_methylated=filter(myDMP,deltaBeta> 0.1, adj.P.Val < 0.05)
+hypo_methylated_prom = hypo_methylated[grep("TSS|5'UTR|1stExon",hypo_methylated$feature),]
+Hyper_methylated_prom = Hyper_methylated[grep("TSS|5'UTR|1stExon",Hyper_methylated$feature),]
+
+colnames(Hyper_methylated_prom)[14]="symbol"
+colnames(hypo_methylated_prom)[14]="symbol"
+
+#Exporting Tables
+write.table(Hyper_methylated_prom,"Hyper_methylated_prom_0.1.tsv",sep='\t')
+write.table(hypo_methylated_prom,"Hypo_methylated_prom_0.1.tsv",sep='\t')
+
+
+#Volcano Plot
+myDMP_volcano=myDMP[grep("TSS|5'UTR|1stExon",myDMP$feature),]
+library(EnhancedVolcano)
+EnhancedVolcano(myDMP_volcano, x= "deltaBeta", y="adj.P.Val", lab =myDMP_volcano$gene , pCutoff = 5e-2, FCcutoff = 0.1, xlab = bquote("Methylation Difference (beta-value)"),ylab = bquote(~-Log[10] ~ italic(Adj.P)),drawConnectors = TRUE,
+    widthConnectors = 0.75,colConnectors = "grey10",
+  max.overlaps = 15)
+  ggsave("Volcano_plot_meth.png", width = 8, height = 7, limitsize = FALSE)
+
+  
+EnhancedVolcano(
+  myDMP_volcano,
+  x = "deltaBeta",
+  y = "adj.P.Val",
+  lab = myDMP_volcano$gene,
+  pCutoff = 5e-2,
+  FCcutoff = 0.1,
+  xlab = bquote("Methylation Difference (beta-value)"),
+  ylab = bquote(~-Log[10] ~ italic(Adj.P)),
+  drawConnectors =TRUE, max.overlaps = 15,
+  maxoverlapsConnectors = 5
+)
+
+  ggsave("Volcano_plot_meth_new.png", width = 8, height = 7, limitsize = FALSE)
+#For the PCA
+  
+  library(DESeq2)
+
+
+# Select the top 500 features by variance
+top_features <- myNorm[order(apply(myNorm, 2, var), decreasing = TRUE)[1:50], ]
+# Check for missing values
+any_missing <- any(is.na(top_features))
+
+# Check for infinite values
+any_infinite <- any(!is.finite(top_features))
+
+# Handle missing values (e.g., impute or remove)
+if (any_missing) {
+  # Example: Replace missing values with column means
+  top_features[is.na(top_features)] <- colMeans(top_features, na.rm = TRUE)
+}
+
+# Handle infinite values (e.g., replace or remove)
+if (any_infinite) {
+  # Example: Replace infinite values with NA
+  top_features[!is.finite(top_features)] <- NA
+}
+library(stringr)
+# Remove rows with any missing or infinite values
+cleaned_top_features <- top_features[complete.cases(top_features), ]
+cleaned_top_features_transp=t(cleaned_top_features)
+# Perform PCA
+meth_meta=mrna_meta[match(meth_meta$Sample.ID,mrna_meta$Sample.ID),]
+
+PCA_Meth= prcomp(cleaned_top_features_transp,scale=TRUE)
+variance_explained <- (PCA_Meth$sdev^2) / sum(PCA_Meth$sdev^2) * 100
+
+df_out=data.frame(PCA_Meth$x)
+df_out$StageGroup=str_remove_all(meth_meta$Stage, "[A-C]")
+df_out$Age_Groups=ifelse(meth_meta$Age>60,"old","young") 
+df_out$race=meth_meta$race
+df_out$plotx=df_out[,1]
+df_out$ploty=df_out[,2]
+
+library(ggplot2)
+ggplot(df_out,aes(x=plotx,y=ploty,color=StageGroup)) + ggtitle("PCA with Stage")+
+geom_point(size = 5) + theme_gray() + xlab("PC1: 16% variance") + ylab("PC2: 10% variance")
+ggsave("PCA_stage_Groups_DMGs.png",height=7,width=7)
+
+ggplot(df_out,aes(x=plotx,y=ploty,color=Age_Groups)) + ggtitle("PCA with Age")+
+geom_point(size = 5) + theme_gray() +  xlab("PC1: 16% variance") + ylab("PC2: 10% variance")
+ggsave("PCA_age_Groups_DMGs.png",height=7,width=7)
+
+ggplot(df_out,aes(x=plotx,y=ploty,color=race)) + ggtitle("PCA with Race")+
+geom_point(size = 5) + theme_gray() +  xlab("PC1: 16% variance") + ylab("PC2: 10% variance")
+ggsave("PCA_race_Groups_DMGs.png",height=7,width=7)
+
+
+
+# The most prestigious heatmap plot ever
+#first step is to make the annotation column
+    #Ordering them from high (all high together) and (all low together), the previous ordering was just matching
+meth_normCounts=myNorm
+meth_meta_ordered_macro= meth_meta[match(mrna_meta_ordered_macro$Sample.ID,meth_meta$Sample.ID),]
+meth_normCounts_ordered= meth_normCounts[,match(meth_meta_ordered_macro$Sample.ID,colnames(meth_normCounts))]
+all(colnames(meth_normCounts_ordered)== meth_meta_ordered_macro$Sample.ID) #ensuring proper matching
+
+#Creating the actual annotation dataframe
+annotation=as.data.frame(meth_meta$macro, row.names = meth_meta$Sample.ID)
+colnames(annotation)="Macrophage_M1_Status"
+annotation$Macrophage_M1_Status= ifelse(annotation$Macrophage_M1_Status==0,"Low","High")
+sum(meth_meta$macro=="1")
+sum(meth_meta$macro=="0")
+
+#Sub-setting the genes with the threshold previously made (DEGs)
+signi=rbind(hypo_methylated_prom,Hyper_methylated_prom)
+signi=signi[order(signi$logFC,decreasing = F),]
+#Merging the normalized count dataframe with the
+allsig = meth_normCounts_ordered[match(row.names(signi),row.names(meth_normCounts_ordered)),]
+#allsig = allsig [order(allsig$logFC,decreasing = T),] # order the genes based on the logfold change
+allsig[is.na(allsig)]=0
+meth_sigCounts= allsig #choose only the columns with sample counts
+library(gplots)
+heatmap_obj=pheatmap::pheatmap(meth_sigCounts, scale = "row", show_rownames = F , cluster_cols = F, cluster_rows = F , annotation_col = annotation , show_colnames = F , main = "Differentially Methylated Probes in TNBC based on M1",col = bluered(100))
+setwd("T://Programming//Data//R//working directory//Final Version//Volcano_Heat")
+ggsave("heatmap_plot_Lf0.6_DMGs.png",heatmap_obj, width = 10, height = 6)
+
+library(ggplot2)
+
+```
+
+Intersection between 87-based DMGs and 118 DEGs resulting in DMEGs
+
+```{r}
+mrna_downreg_macro$symbol= row.names(mrna_downreg_macro)
+mrna_upreg_macro$symbol= row.names(mrna_upreg_macro)
+
+Intersection_silenced_DEGs_DMGs_0.1=merge(Hyper_methylated_prom,mrna_downreg_macro,by="symbol")
+Intersection_activated_DEGs_DMGs_0.1=merge(hypo_methylated_prom,mrna_upreg_macro,by="symbol")
+
+Intersection_silenced_DEGs_DMGs_0.1=Intersection_silenced_DEGs_DMGs_0.1[!duplicated(Intersection_silenced_DEGs_DMGs_0.1$symbol),]
+Intersection_activated_DEGs_DMGs_0.1=Intersection_activated_DEGs_DMGs_0.1[!duplicated(Intersection_activated_DEGs_DMGs_0.1$symbol),]
+
+#Storing the intersected genes to be later supplemented to Gprofiler
+dir.create("Survival\\Intersections")
+setwd("Survival\\Intersections")
+write.table(unique(Intersection_silenced_DEGs_DMGs_0.1),"Intersection_silencedDEGs_lfc1_DMGs87_0.1.tsv", sep= "\t")
+write.table(unique(Intersection_activated_DEGs_DMGs_0.1),"Intersection_activatedDEGs_lfc1_DMGs87_0.1.tsv", sep= "\t")
+
+
+```
+
+Getting the miRwalk prediction into the R-environment and adjusting the
+parameters of the predictions
+
+```{r}
+
+# Reading and Classification of DEMs into activating (downregulated DEMs) and silencing(upregulated DEMs) (adapted from miRwalk)
+
+path_of_silencing_DEM_3="Mirwalk\\Silenced_DEMTs_3(all).csv"
+
+silencing_DEMs_118_targets=read.csv(path_of_silencing_DEM_3,header=T)
+
+
+path_of_activating_DEM_3="Mirwalk\\Activated_DEMTs_3(all).csv"
+
+activating_DEMs_118_targets=read.csv(path_of_activating_DEM_3,header=T)
+
+
+#grep the DEMs targets with miRDB, targetscan, or miRtarbase prediction
+
+# if the targetscan is present the counts will be 1 and if the miRDB or mirtarbase are also present will yield 2
+# Convert the miRTARBASE predictions to 1 or 0
+
+#Initializing a new column with dummy numbers
+silencing_DEMs_118_targets$Mirtarbase = 0
+activating_DEMs_118_targets$Mirtarbase = 0
+
+#assigning the 1s for the targets that are actually validated
+silencing_DEMs_118_targets$Mirtarbase[grep("MIRT",silencing_DEMs_118_targets$validated)] = 1
+activating_DEMs_118_targets$Mirtarbase[grep("MIRT",activating_DEMs_118_targets$validated)] = 1
+
+
+silencing_DEMs_118_targets=silencing_DEMs_118_targets[rowSums(silencing_DEMs_118_targets[c("TargetScan","miRDB","Mirtarbase")]) >=1,] 
+
+
+activating_DEMs_118_targets=activating_DEMs_118_targets[rowSums(activating_DEMs_118_targets[c("TargetScan","miRDB","Mirtarbase")]) >=1,]
+
+
+```
+
+Intersection between 118 based-DEGs and 118 based-DEMs targeted Genes
+
+```{r}
+# Subsetting certain columns needed from the mirwalk dataframe provided
+
+activating_DEMs_118_targets=activating_DEMs_118_targets[,c("mirnaid","symbol","validated")]
+colnames(activating_DEMs_118_targets)[2]="symbol"
+silencing_DEMs_118_targets=silencing_DEMs_118_targets[,c("mirnaid","symbol","validated")]
+colnames(silencing_DEMs_118_targets)[2]="symbol"
+
+#removing any duplicate gene target/ This step will not be performed for the regulatory network
+silencing_DEMs_118_targets=silencing_DEMs_118_targets[!duplicated(silencing_DEMs_118_targets$symbol),]
+activating_DEMs_118_targets=activating_DEMs_118_targets[!duplicated(activating_DEMs_118_targets$symbol),]
+
+
+#Intersection between downregulated miRs with upregulated DEGs 
+#Or upregulated miRs with downregulated DEGs
+
+activated_intersected_DEGs_DEMs=merge(activating_DEMs_118_targets,mrna_upreg_macro[,c("log2FoldChange","symbol")],by="symbol")
+silenced_intersected_DEGs_DEMs=merge(silencing_DEMs_118_targets,mrna_downreg_macro[,c("log2FoldChange","symbol")],by="symbol")
+
+#common genes that are regulated by two miRs at the same time, should be zero
+
+common_DEGs_DEMs=merge(silenced_intersected_DEGs_DEMs,activated_intersected_DEGs_DEMs,by="symbol") #0 results
+common_DEGs_DEMs=merge(silencing_DEMs_118_targets,activating_DEMs_118_targets,by="symbol") #0 results
+
+
+
+#Storing the intersected genes to be later supplemented to Gprofiler
+setwd("Survival\\Intersections")
+write.table(activated_intersected_DEGs_DEMs,"activated_intersected_DEGs_lfc1_DEMs_iso_predicted_3'.tsv", sep= "\t")
+write.table(silenced_intersected_DEGs_DEMs,"silenced_intersected_DEGs_lfc1_DEMs_iso_predicted_3'.tsv", sep= "\t")
+
+
+#Intersection of the DMEGs with DEMTs
+
+Activated_DMEGs_DMETs=merge(activated_intersected_DEGs_DEMs,Intersection_activated_DEGs_DMGs_0.1,by="symbol")
+Activated_DMEGs_DMETs=Activated_DMEGs_DMETs[!duplicated(Activated_DMEGs_DMETs$symbol),]
+
+Silenced_DMEGs_DMETs=merge(silenced_intersected_DEGs_DEMs,Intersection_silenced_DEGs_DMGs_0.1,by="symbol")
+Silenced_DMEGs_DMETs=Silenced_DMEGs_DMETs[!duplicated(Silenced_DMEGs_DMETs$symbol),]
+
+```
+
+---
+title: "TNBCPAPER_tmbYLOME_Pipeline`"
+output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+First of all, the following packages have to be recalled
+
+```{r message=TRUE, warning=FALSE}
+#library(knitr)
+library(DESeq2)
+library(RColorBrewer)
+library(pheatmap)
+library(gplots)
+library(biomaRt)
+library(PCAtools)
+library(DT)
+library(IHW)
+library(apeglm)
+library(EnhancedVolcano)
+library(ComplexHeatmap)
+library(TCGAbiolinks)
+library(dplyr)
+library(EnhancedVolcano)
+library(org.Hs.eg.db)
+
+```
+
+After you stored your IDs into a vector or array, you will submit a
+query by the function [GDCquery()] that defines the 1.project name (BRCA
+for breast cancer, PRAD for prostate cancer, etc...) 2.the category of
+data (Transcriptomics/Genomics/Proteomics) 3.the data type (Expression
+quantification, variants) 4.the experimental strategy (Hi-Seq - Counts)
+[old version] and (STAR - Counts) 5.the barcode whose function is to
+limit the scope of the search to the provided sample/ patients IDs
+
+```{r}
+tmb_query = GDCquery(project = "TCGA-BRCA",
+                data.category = "Simple Nucleotide Variation", 
+    access = "open", 
+    data.type = "Masked Somatic Mutation", 
+    workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking",
+                       barcode=colnames((mrna_tpm_coding)[-1]) )
+```
+
+You will download the query by the function [GDCdownload()] that
+receives the following arguments 1st --\> the query that has already
+been stored tmbod, I don't have an idea Files per chunk, how many mb per
+file (lower the value in case of unstable network connection) Directory,
+the location at which you planned your files will be downloaded at.
+
+```{r}
+GDCdownload(tmb_query)
+
+# Here is the prepare function that usually takes time
+
+tmb_df=GDCprepare(tmb_query)
+
+#saveRDS(tmb_df,'TCGA_BRCA_TNBC_TMB_Paper_from154_Asel.rds')
+#tmb_df=readRDS('TCGA_BRCA_TNBC_TMB_Paper_from154_Asel.rds')
+```
+
+Do not use na.omit with the following dataframe
+
+```{r}
+tmb_meta=tmb_query
+tmb_df = as.data.frame(tmb_df)
+
+```
+
+Removing the extra letters after the sample IDs in the Sample_Barcode
+column in the mutational matrix
+
+```{r}
+tmb_df$Tumor_Sample_Barcode = delim_fn(x =tmb_df$Tumor_Sample_Barcode, n = 0, i = 4)
+
+#Assigning the patients ID present in the tmb_df
+Tumor_Samples_Mutational=tmb_df$Tumor_Sample_Barcode[!duplicated(tmb_df$Tumor_Sample_Barcode)]
+Tumor_Samples_Mutational=data.frame(Sample.ID=Tumor_Samples_Mutational)
+mutational_meta= merge(mrna_meta,Tumor_Samples_Mutational,by="Sample.ID")
+```
+
+```{r}
+
+#Adapt the 100 patients that have Mutational Data from the 154
+
+
+# Store the sample IDs with high or low, seperately
+
+High_mut_IDs=mutational_meta$Sample.ID[mutational_meta$macro=="High"]
+Low_mut_IDs=mutational_meta$Sample.ID[mutational_meta$macro=="Low"]
+
+
+
+High_mut_IDs= as.data.frame(High_mut_IDs)
+Low_mut_IDs= as.data.frame(Low_mut_IDs)
+
+dir.create("TMB",recursive=TRUE)
+setwd("TMB")
+
+write.table(High_mut_IDs,file="High_mut_IDs.tsv",sep="\t",row.names = F, col.names = T)
+write.table(Low_mut_IDs,file="Low_mut_IDs.tsv",sep="\t",row.names = F, col.names = T)
+
+# assigning column names that match the tmb_df for further subsetting and splitting into two df or two maf files
+colnames(High_mut_IDs)[1]="Tumor_Sample_Barcode"
+colnames(Low_mut_IDs)[1]="Tumor_Sample_Barcode"
+
+
+
+# Splitting the tmb_df into two dataframes by the merge function
+High_mut_MAF = merge(High_mut_IDs,tmb_df,by="Tumor_Sample_Barcode")
+Low_mut_MAF = merge(Low_mut_IDs,tmb_df,by="Tumor_Sample_Barcode")
+
+#Re-adjusting the order of the columns
+High_mut_MAF=High_mut_MAF[,match(colnames(tmb_df),colnames(High_mut_MAF))]
+Low_mut_MAF=Low_mut_MAF[,match(colnames(tmb_df),colnames(Low_mut_MAF))]
+
+#Saving the MAF files for later use in the MAFtools, run the three lines together 
+
+write.table(High_mut_MAF,file="High_mut_MAF.maf",sep="\t",row.names = F, col.names = T)
+write.table(Low_mut_MAF,file="Low_mut_MAF.maf",sep="\t",row.names = F, col.names = T)
+
+
+```
+
+The Mutational Analysis
+
+```{r}
+#Library Installation
+
+# We first load the needed package
+library(maftools)
+library(mclust)
+library(ggplot2)
+
+
+# Then we load the .maf files (generated by Radwan as .tsv files but simply change the extension to .maf and it works!)
+setwd("TMB")
+
+pdf(file = "High_Low_M1_TCGA_interactions.pdf", width = 12, height = 8)
+
+High_M1 = data.table::fread("High_mut_MAF.maf")
+Low_M1 = data.table::fread("Low_mut_MAF.maf")
+
+# We use read.maf function to ACTUALLY consider them maf files
+High_M1 = read.maf(maf = High_M1)
+Low_M1 = read.maf(maf = Low_M1)
+#lots the most important graph of this package, the one that summarizes everything
+plotmafSummary(maf = High_M1, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE, top = 10)
+
+plotmafSummary(maf = Low_M1, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE, top = 10)
+
+
+# This is another graph that shows the distribution of mutations in each gene
+oncoplot(maf = High_M1, titleText = "High M1", top = 20, gene_mar = 7)
+
+oncoplot(maf = Low_M1, titleText = "Low M1", top = 20, gene_mar = 7)
+
+# This is the plot for the genes pairwise mutations
+somaticInteractions(maf = High_M1, pvalue = c(0.05, 0.1), top = 10, fontSize = 0.5, nShiftSymbols = 8,
+  plotPadj = TRUE)
+
+somaticInteractions(maf = Low_M1, pvalue = c(0.05, 0.1), top = 10, fontSize = 0.5, nShiftSymbols = 8,
+  plotPadj = TRUE,colNC = 9)
+
+
+# To generate Tumor Mutation Burden graphs
+tmbH = tmb(maf=High_M1, logScale = FALSE)
+
+tmbL = tmb(maf=Low_M1, logScale = FALSE)
+
+whilcox_tmb<-wilcox.test(tmbH$total_perMB,tmbL$total_perMB,paired=FALSE)
+
+
+mannwhitney_tmb <- rbind(cbind("high", tmbH$total_perMB), cbind("low", tmbL$total_perMB))
+
+# Converting to data frame
+mannwhitney_tmb <- as.data.frame(mannwhitney_tmb)
+
+# Converting column to numeric
+mannwhitney_tmb$V2 <- as.double(mannwhitney_tmb$V2)
+
+
+# Plotting
+ggbetweenstats(data = mannwhitney_tmb, x = V1, y = V2, type = "np")
+ggsave("tmb_Comparison.png")
+library(ggstatsplot)
+# If we want summaries of TMB values
+summary(tmbH)
+summary(tmbL)
+
+# Same function as above, but here we determine a specific gene of interest
+# It gives us a dataframe object with the drugs in database that have been tried on this gene
+
+
+# A mafCompare object that provides a summary of the comparison between two cohorts (H-M1 and L-M1)
+mc = mafCompare(High_M1, Low_M1, m1Name = "High M1", m2Name = "Low M1",minMut = 3)
+
+# Used to find differentially mutated genes. In our case, no differentially mutated genes were found.
+forestPlot(mc, pVal = 0.4) # It will yield an error because of the absence of differentially mutated genes
+
+
+
+oncoplot(maf = High_M1, pathways = "sigpw", gene_mar = 8, fontSize = 0.6, topPathways = 10, collapsePathway = TRUE)
+
+oncoplot(maf = Low_M1, pathways = "sigpw", gene_mar = 8, fontSize = 0.6, topPathways = 10, collapsePathway = TRUE)
+
+# Capture somaticInteractions plot using dev.copy2pdf
+dev.off()
+
+```
+Plotting the interactions as venn diagrams
+```{r}
+
+#VennDiagram Work
+library(ggVennDiagram)
+library(ggplot2)
+library(gplots)
+VEN_DEMTs_Activated= list(DEGs=mrna_upreg_macro$genes,DEMs=activating_DEMs_118_targets$symbol)
+venn_plot=ggVennDiagram(VEN_DEMTs_Activated,label_alpha = 0, label_color ="white", set_color=NA, edge_size = 10, label_size = 10,category.names = names(VEN_DEMTs_Activated))+
+  scale_fill_gradient(low="#F1DDCC",high = "#9AC1E3")
+
+setwd("Survival//Intersections")
+ggsave(paste0("VEN_DEMTs_Activated","venn_diagram.png"), venn_plot, width = 8, height = 6, units = "in", dpi = 300)
+#"#F8766D"
+VEN_DMEGs_Activated= list(DEGs=mrna_upreg_macro$genes,DMGs=as.character(hypo_methylated_prom$symbol))
+venn_plot=ggVennDiagram(VEN_DMEGs_Activated,label_alpha = 0, label_color ="white", set_color=NA, edge_size = 10, label_size = 10,category.names = names(VEN_DMEGs_Activated))+
+  scale_fill_gradient(low="#F1DDCC",high = "#9AC1E3")
+
+ # setwd("Survival//Intersections")
+ggsave(paste0("VEN_DMEGs_Activated","venn_diagram.png"), venn_plot, width = 8, height = 6, units = "in", dpi = 300)
+
+
+VEN_DEMTs_silenced= list(DEGs=mrna_downreg_macro$genes,DEMs=silencing_DEMs_118_targets$symbol)
+venn_plot=ggVennDiagram(VEN_DEMTs_silenced,label_alpha = 0, label_color ="white", set_color=NA, edge_size = 10, label_size = 10,category.names = names(VEN_DEMTs_silenced))+
+  scale_fill_gradient(low="#F1DDCC",high = "#9AC1E3")
+ 
+ #setwd("Survival//Intersections")
+ggsave(paste0("VEN_DEMTs_silenced","venn_diagram.png"), venn_plot, width = 8, height = 6, units = "in", dpi = 300)
+
+VEN_DMEGs_silenced= list(DEGs=mrna_downreg_macro$genes,DMGs=as.character(Hyper_methylated_prom$symbol))
+venn_plot=ggVennDiagram(VEN_DMEGs_silenced,label_alpha = 0, label_color ="white", set_color=NA, edge_size = 10, label_size = 10,category.names = names(VEN_DMEGs_silenced))+
+  scale_fill_gradient(low="#F1DDCC",high = "#9AC1E3")
+ #setwd("Survival//Intersections")
+ggsave(paste0("VEN_DMEGs_silenced","venn_diagram.png"), venn_plot, width = 8, height = 6, units = "in", dpi = 300)
+
+
+
+```
+
+Immunome Atlas Analysis (adapted from TCIA, already made)
+
+```{r}
+library(ggstatsplot)
+library(ggplot2)
+
+
+dir.create("TMB\\Immunome",recursive=TRUE)
+setwd("TMB\\Immunome")
+
+#Reading files adapted from immunome for the correpsonding high/low M1 samples
+Het_LowM1=read.table ("Heterogeneity low M1.tsv", sep= "\t", header=T)
+Het_HighM1= read.table ("Heterogeneity high M1.tsv", sep= "\t", header=T)
+
+IPS_HighM1=read.table ("immunotherapy scores high M1.tsv", sep= "\t", header=T)
+IPS_LowM1= read.table ("immunotherapy scores low M1.tsv", sep= "\t", header=T)
+
+data_het=rbind(cbind(status="high_m1",Het_HighM1),cbind(status="low_m1",Het_LowM1))
+
+
+for(i in 3:length(colnames(Het_HighM1))){
+formula <- substitute(ggbetweenstats(data = data_het, x =status, y = y_var, type = "np"),list(y_var = colnames(Het_HighM1)[i]))
+eval(formula)
+plot_filename <-paste(colnames(Het_HighM1)[i], ".png", sep="")
+ggsave(plot_filename) }
+
+
+data_immuno=rbind(cbind(status="high_m1",IPS_HighM1),cbind(status="low_m1",IPS_LowM1))
+
+for(i in c(26:29)){
+formula <- substitute(ggbetweenstats(data = data_immuno, x =status, y = y_var, type = "np"),list(y_var = colnames(IPS_HighM1)[i]))
+eval(formula)
+plot_filename <-paste(colnames(IPS_HighM1)[i], ".png", sep="")
+ggsave(plot_filename) }
+
+```
+
+Reading the MMR and HRD
+
+```{r}
+#adapting the sampels
+setwd("TMB")
+High_mut_IDs=read.table(file="High_mut_IDs.tsv",sep="\t", col.names = "ID",skip =1)
+Low_mut_IDs=read.table(file="Low_mut_IDs.tsv",sep="\t", col.names = "ID",skip =1)
+High_mut_IDs$ID=gsub("-01A","-01",High_mut_IDs$ID)
+Low_mut_IDs$ID=gsub("-01A","-01",Low_mut_IDs$ID)
+
+setwd("TMB\\MMR")
+MMR_signature <- read_xlsx("TCGA_DDR_Data_Resources.xlsx", sheet = 8, col_names = TRUE, skip = 3)
+MMR_signature_HighM1 = merge(x=MMR_signature[,c(2,5:48)],y=High_mut_IDs, by.x="TCGA sample barcode", by.y="ID")
+MMR_signature_LowM1 = merge(x=MMR_signature[,c(2,5:48)],y=Low_mut_IDs, by.x="TCGA sample barcode", by.y="ID")
+
+data_mmr=rbind(cbind(status="high_m1",MMR_signature_HighM1),cbind(status="low_m1",MMR_signature_LowM1))
+setwd("TMB\\MMR\\Plots")
+for(i in c(2:45)){
+formula <- substitute(ggbetweenstats(data = data_mmr, x =status, y = y_var, type = "np"),list(y_var = colnames(MMR_signature_HighM1)[i]))
+eval(formula)
+plot_filename <-paste(colnames(MMR_signature_HighM1)[i], ".png", sep="")
+ggsave(plot_filename) }
+
+
+```
+
+
+
+
+
+
+---
+title: "FUSCC Mutational Analysis Cohor"
+output: html_notebook
+---
+
+Mutational Analysis with CIBERSORT For FUSCC TNBC Cohort
+
+#Library Installation
+```{r}
+#Library Installation
+#BiocManager::install("maftools")
+#install.packages("mclust")
+library(maftools)
+library(mclust)
+library(readxl)
+library(dplyr)
+library(survival)
+library(survminer)
+
+```
+
+
+```{r}
+#Adjusting the metadata
+dir.create("Survival\\FUSC")
+setwd("Survival\\FUSC")
+FUSC_meta=read_excel("Clinical_data_FUSC.xlsx",skip=1) #adapted from the article cell.com/cancer-cell/fulltext/S1535-6108(19)30096-0#supplementaryMaterial
+
+#Exclude the patients with bad quality control, and select the patients with multi-omics
+FUSC_meta <- filter(FUSC_meta,
+                         DNA_QC_Failed != "TRUE",
+                         Exome_Seqencing == "YES",
+                         RNA_Seqencing == "YES",
+                         OncoScan_Array == "YES",)
+FUSC_mut_meta=FUSC_meta
+```
+
+
+```{r}
+# The tpm expression matrix file adapted from https://figshare.com/articles/dataset/A_comprehensive_genomic_and_transcriptomic_dataset_of_triple-negative_breast_cancers/19783498
+#was channeled directly to CIBERSORTx, applying the RNA-Seq settings (batch correction = on / disable quantile / perm = 100 / absolute = on)
+setwd("Survival\\FUSC")
+Fusc_tpm=read.table("FUSCCTNBC_Expression_RNAseqTPM_hg38.tsv",header=TRUE)
+write.table(Fusc_tpm, file = "FUSCC_TPM_processed.tsv", sep = "\t", quote = FALSE, row.names = FALSE) 
+
+```
+
+
+Cibersort Analysis
+```{r}
+setwd("Survival\\FUSC")
+FUSC_cibersort=read.table("FUSC_cibersort.csv",sep=',',header= T)
+FUSC_cibersort=FUSC_cibersort[FUSC_cibersort$P.value<0.05,]
+
+CIBERSORT_mutational= FUSC_cibersort[match(FUSC_mut_meta$Project_ID,FUSC_cibersort$Mixture),]
+CIBERSORT_mutational=CIBERSORT_mutational[,c(1,16)]
+
+mean_cibersort = mean(CIBERSORT_mutational[,2])
+sd_cibersort = sd(CIBERSORT_mutational[,2])
+  
+#intiating a dataframe with identical dimension
+Cutoff_mutational_matrix =  CIBERSORT_mutational 
+
+ Cutoff_mutational_matrix[,2] = ifelse( CIBERSORT_mutational[,2] > mean_cibersort + 0.25 * sd_cibersort, "1", ifelse(CIBERSORT_mutational[,2] < mean_cibersort - 0.25 * sd_cibersort, "0", "middle"))
+
+Cutoff_mutational_matrix= Cutoff_mutational_matrix[Cutoff_mutational_matrix$Macrophages.M1!="middle",]
+ 
+ mutational_meta = Cutoff_mutational_matrix
+ colnames(mutational_meta)[c(1,2)]= c("Sample.ID","macro")
+ mutational_meta = merge(mutational_meta,FUSC_mut_meta, by.x = "Sample.ID", by.y="Project_ID")
+
+ 
+High_mut_IDs=mutational_meta$Sample.ID[mutational_meta$macro=="1"]
+Low_mut_IDs=mutational_meta$Sample.ID[mutational_meta$macro=="0"]
+High_mut_IDs= data.frame(Tumor_Sample_Barcode=High_mut_IDs)
+Low_mut_IDs= data.frame(Tumor_Sample_Barcode=Low_mut_IDs)
+
+
+# Then we load the .maf files (generated by Radwan as .tsv files but simply change the extension to .maf and it works!)
+
+ #  the following maf file is adapted from the website (nature.com/articles/s41597-022-01681-z) 
+
+FUSC_mutations = data.table::fread("FUSCCTNBC_Mutations_Extended_hg38.maf") 
+
+# Splitting the tmb_df into two dataframes by the merge function
+High_mut_MAF = merge(High_mut_IDs,FUSC_mutations,by="Tumor_Sample_Barcode")
+Low_mut_MAF = merge(Low_mut_IDs,FUSC_mutations,by="Tumor_Sample_Barcode")
+
+unique(High_mut_MAF$Tumor_Sample_Barcode)
+unique(Low_mut_MAF$Tumor_Sample_Barcode)
+
+```
+
+
+```{r}
+library(ggstatsplot)
+#The Mutational Analysis
+dir.create("Survival\\FUSC\\Plots\\Genomics",recursive=TRUE)
+setwd("Survival\\FUSC\\Plots\\Genomics")
+
+# We use read.maf function to ACTUALLY consider them maf files
+High_M1 = read.maf(maf = High_mut_MAF)
+Low_M1 = read.maf(maf = Low_mut_MAF)
+
+pdf(file = "High_Low_M1_FUSCC_interactions.pdf", width = 12, height = 8)
+
+#lots the most important graph of this package, the one that summarizes everything
+plotmafSummary(maf = High_M1, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE, top = 10)
+plotmafSummary(maf = Low_M1, rmOutlier = TRUE, addStat = 'median', dashboard = TRUE, titvRaw = FALSE, top = 10)
+
+# This is another graph that shows the distribution of mutations in each gene
+oncoplot(maf = High_M1, titleText = "High M1", top = 10)
+oncoplot(maf = Low_M1, titleText = "Low M1", top = 10)
+
+# This is the plot for the genes pairwise mutations
+somaticInteractions(maf = High_M1, pvalue = c(0.05, 0.1), top = 10, fontSize = 0.5, nShiftSymbols = 2)
+somaticInteractions(maf = Low_M1, pvalue = c(0.05, 0.1), top = 10, fontSize = 0.6, nShiftSymbols = 2)
+
+
+# To generate Tumor Mutation Burden graphs
+tmbH = tmb(maf=High_M1, logScale = FALSE)
+tmbL = tmb(maf=Low_M1, logScale = FALSE)
+
+mutational_meta$macro[mutational_meta$macro==1]="High M1"
+mutational_meta$macro[mutational_meta$macro==0]="Low M1"
+
+#Mann-Whitney Test for Genomic Aspects
+data_tmb= rbind((tmbH),(tmbL))
+mutational_meta= merge(mutational_meta,data_tmb,by.x="Sample.ID", by.y="Tumor_Sample_Barcode")
+mutational_meta <- arrange(mutational_meta, macro, descending = TRUE)
+
+
+
+for (i in c(18:23,26:28,53)) {
+mutational_meta[,i]= as.numeric(mutational_meta[,i])
+formula <- substitute(ggbetweenstats(data = mutational_meta, x = macro, y = y_var, type = "np"),list(y_var =colnames(mutational_meta)[i]))
+eval(formula)
+colnames(mutational_meta)[i] = gsub("/", ".",colnames(mutational_meta)[i])
+ plot_filename <-paste(colnames(mutational_meta)[i], ".png", sep="")
+ggsave(plot_filename)
+}
+
+# If we want summaries of TMB values
+summary(tmbH)
+summary(tmbL)
+
+
+# A mafCompare object that provides a summary of the comparison between two cohorts (H-M1 and L-M1)
+mc = mafCompare(High_M1, Low_M1, m1Name = "High M1", m2Name = "Low M1")
+
+# Used to find differentially mutated genes. Differentially mutated genes showed contradictions with the other dataset
+forestPlot(mc, pVal = 0.05)
+
+# Capture somaticInteractions plot using dev.copy2pdf
+dev.off() # the file is save as pdf in the destination assigned
+
+```
+
+
+
+
+Survival analysis for M1 
+#Automated CIBERSORT Cutoff for all the immune cells
+
+```{r}
+
+# Reading the file
+setwd("Survival\\FUSC")
+CIBERSORT= read.table("FUSC_cibersort.csv",sep=',',header= T)
+
+#Assign a cutoff values for the samples with more than 0.05 of p-value to be removed
+CIBERSORT= CIBERSORT[CIBERSORT$P.value<=0.05,]
+
+#Removing the samples that are not present
+CIBERSORT= na.omit(CIBERSORT[match(FUSC_meta$Project_ID,CIBERSORT$Mixture),])
+
+#initialization a cutoff matrix
+Cutoff_matrix= CIBERSORT[,1:23] #choosing the immune-cells' column only
+
+#For loop to assign the high = 1 and low = 0 and in the cutoff = ' middle' for the 22 immune cells based on mean +- 0.25std cutoff formula
+
+for (cell in 2:23) {
+   mean_cibersort = mean(CIBERSORT[,cell]) #calculate the mean for the iterated column
+  sd_cibersort = sd(CIBERSORT[,cell])      #calculate the standard deviation for the iterated column
+  
+  
+ Cutoff_matrix[cell] = ifelse( CIBERSORT[,cell] > mean_cibersort + 0.25 * sd_cibersort, "1", ifelse(CIBERSORT[,cell] < mean_cibersort - 0.25 * sd_cibersort, "0", "middle"))
+}
+
+```
+
+Testing the prognostic effect of each immune cell on the overall 
+
+
+(Most probably will not be included because this dataset has relapse survival and the OS is not publicly available)
+
+
+
+```{r}
+
+#Merging the Abundance of Immune Cells with the Survival Data of the Patients present in TNBC_meta
+colnames(FUSC_meta)[c(39,37)]= c("Time","Event")
+survival_cibersort_matrix = merge( x = FUSC_meta[,c(1,39,37)], y= Cutoff_matrix , by.x ="Project_ID" ,by.y="Mixture")
+
+
+# intiating a data frame to store the p-values of the k-m logrank test fore each immune cell
+immune_cells_pvals = data.frame(immune_cell = character(), P_value = numeric())
+# naive CD4-Tcell was removed as most of the values lied in the cutoff
+survival_cibersort_matrix=survival_cibersort_matrix[,-8]
+#assigning a new matrix to store the matrix before any manipulation that will be later used in the for loop
+survival_cibersort_matrix_original=survival_cibersort_matrix 
+
+
+
+dir.create("Survival\\FUSC\\Plots\\Cells",recursive=TRUE)
+  setwd("Survival\\FUSC\\Plots\\Cells")
+
+# The survival analysis, iterating on each immune cell and printing the cells' p-values
+for(i in 4:ncol(survival_cibersort_matrix)){
+  
+  #returning to the original matrix because at each loop different rows (samples) will be removed
+  survival_cibersort_matrix=survival_cibersort_matrix_original 
+  #remove the samples assigned in the cutoff range (middle)
+  survival_cibersort_matrix= survival_cibersort_matrix[which(survival_cibersort_matrix[,i]!="middle"),]
+  
+  #the survfit function calculate the k-m and p-value for each immune cell
+  immune_cell = survfit(Surv(Time, Event)~survival_cibersort_matrix[[i]], data=survival_cibersort_matrix)
+  
+  #assigning the p-value to the dataframe pvals. (i-3) because the dataframe starts with the 4th column as immune cell and it is recorded as the first row in the pval dataframe
+  
+  #assigning the name of the immune cell
+  immune_cells_pvals[i-3, "immune_cell"] = colnames(survival_cibersort_matrix)[i]
+  
+  #assigning the corresponding p-value for it
+  immune_cells_pvals[i-3, "P_value"] =  surv_pvalue(immune_cell, data = survival_cibersort_matrix, method = "survdiff")$pval
+
+    #ploting and saving a k-m plot to make sure whether it is a good or poor prognostic indicator
+
+    plot = ggsurvplot(immune_cell, xlim=c(0, 10), break.x.by = 1,
+         pval= TRUE, risk.table.title="",
+           legend.labs=c(paste("Low ", colnames(survival_cibersort_matrix)[i]), paste("High ", colnames(survival_cibersort_matrix)[i])), legend.title="",  
+             surv.scale = "percent",
+             title="Immune Cell Survival")
+  
+     ggsave(paste(colnames(survival_cibersort_matrix)[i], ".png"), plot$plot)
+}
+```
