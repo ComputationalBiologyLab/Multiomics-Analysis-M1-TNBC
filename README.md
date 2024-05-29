@@ -5,6 +5,7 @@
 3) Third file to access is the GSE194040, as it has the pCR analysis for the TNBC patients in the dataset
 
 
-#  Supplementary Files (2 file only)
-1) TNBC_immunogenomics, needed in the first notebook as it has clinical data for the TCGA-TNBC
-2) Clinical, needed in the first notebook as it has additional demographics for the TCGA-TNBC
+#  Supplementary Files (7 file only)
+1) TNBC_immunogenomics and Clinical.tsv are needed in the first notebook as it has clinical data for the TCGA-TNBC
+2) Activated/Silenced DEMTs_3(all).csv are needed in the first notebook as they contain the miR-targets and are adapted from miRwalk
+3) Heterogeneity, Immunotherapy scores, and TCGA DDR data are for genomic analysis of the TCGA-TNBC
