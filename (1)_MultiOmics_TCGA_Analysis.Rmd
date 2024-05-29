@@ -25,6 +25,7 @@ install.packages("DT")
 install.packages("readxl")
 install.packages("ggVennDiagram")
 BiocManager::install("IHW")
+install.packages("finalfit")
 
 
 ```
@@ -93,7 +94,7 @@ the 01A was prefered and selected due to its freezing storage technique.
 ```{r}
 
 #Adjusting the column names of the fetched data
-colnames(sample_ids)=c("Case.ID","Sample.ID")
+colnames(sample_ids)[c(28,29)]=c("Case.ID","Sample.ID")
 
 # Grab the patients with 01A Samples
 sample_ids_primary= sample_ids[grep("01A",sample_ids$Sample.ID),]
@@ -103,7 +104,7 @@ sample_ids_primary=rbind(sample_ids_primary, sample_ids[grep("01B",sample_ids$Sa
 sample_ids_primary=sample_ids_primary[!duplicated(sample_ids_primary$Case.ID),]
 
 #Add a sample column in the TNBC_meta matrix
-TNBC_meta=merge(sample_ids_primary,TNBC_meta, by="Case.ID")
+TNBC_meta=merge(sample_ids_primary[,c(28,29)],TNBC_meta, by="Case.ID")
 
 ```
 
@@ -122,9 +123,8 @@ GDCdownload(mrna_query,directory=
                       "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
 mrna_df=GDCprepare(mrna_query, directory=
                       "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
-
-GDCdownload(mrna_query)
-mrna_df=GDCprepare(mrna_query)
+#GDCdownload(mrna_query)
+#mrna_df=GDCprepare(mrna_query)
 
 ```
 
@@ -180,7 +180,6 @@ rownames(mrna_raw)=removeVersion(rownames(mrna_raw))
 
 
 ```
-
 
 Convert the ENSGIDs (rownames) to HGNC symbols (for tpm/raw) that can be
 latter recognized by the CIBERSORTx web-service. v110 was used, which is
@@ -294,64 +293,6 @@ tcga_abundance=ggplot(CIBERSORT_visualization, aes(x=Feature, y=Value, fill=Feat
 ggsave("tcga_abundance.png",tcga_abundance,width =15 , height =8 )
 ```
 
-
-```{r}
-# Demographics
-library(tidyverse)
-install.packages("finalfit")
-library(finalfit)
-colnames(TNBC_meta)
-testing_meta= TNBC_meta
-testing_meta=mrna_meta
-
-# Specify explanatory variables of interest
-explanatory <- c("Age", 
-                "StageGroup","Time","Event")
-table_TCGA= testing_meta %>% 
-  summary_factorlist("macro",explanatory,
-                      na_include=TRUE)
-
-TNBC_meta$StageGroup = str_remove_all(TNBC_meta$Stage, "[A-C]")
-TNBC_meta$StageGroup[TNBC_meta$StageGroup=="unknow"] = "Stage II" # Assigning stage II for an unassigned sample, based on the ajcc 8th edition
-
-
-install.packages("Hmisc")
-library(Hmisc)
-#statistics
-summary(TNBC_meta)
-description_Of_TNBC=stat.desc(TNBC_meta)
-describe(TNBC_meta$StageGroup)
-check=describe(race_TNBC$race)
-
-race_TNBC <- read.delim("clinical.tsv")
-race_TNBC = merge(TNBC_meta,race_TNBC[,c("case_submitter_id","race")],by.x="Case.ID",by.y="case_submitter_id")
-race_TNBC = race_TNBC[!duplicated(race_TNBC$Case.ID),]
-
-race_TNBC= race_TNBC[,c("Sample.ID","race")]
-# Demographics for high and low M1
-library(stringr)
-mrna_meta$StageGroup = str_remove_all(mrna_meta$Stage, "[A-C]")
-mrna_meta$StageGroup[mrna_meta$StageGroup=="unknow"] = "Stage II"
-mrna_meta= merge(mrna_meta,race_TNBC,by="Sample.ID")
-mrna_meta_high=mrna_meta[which(mrna_meta$macro=="High"),]
-mrna_meta_low=mrna_meta[which(mrna_meta$macro=="Low"),]
-
-summary(mrna_meta[which(mrna_meta$macro=="High"),])
-summary(mrna_meta[which(mrna_meta$macro=="Low"),])
-description_Of_TNBC=stat.desc(mrna_meta_high)
-description_Of_TNBC=stat.desc(mrna_meta_low)
-
-describe(mrna_meta_high$StageGroup)
-describe(mrna_meta_low$StageGroup)
-
-describe(mrna_meta_high$race)
-describe(mrna_meta_low$race)
-
-
-
-sessionInfo()
-```
-
 Testing the prognostic effect of each immune cell on the overall
 survival
 
@@ -416,9 +357,6 @@ write.table(immune_cells_pvals, "immune_cells_pvals_TCGA.tsv", sep = '\t', row.n
 
 ```
 
-
-
-
 Saving the M1 patients cutoff with the macrophage m1, the only one that
 showed a prognostic p-value \< 0.05
 
@@ -454,6 +392,62 @@ mrna_raw_coding=mrna_raw_coding[,match(mrna_meta$Sample.ID,colnames(mrna_raw_cod
 
 all(mrna_meta$Sample.ID==colnames(mrna_raw_coding))   #safety check that the matching was done properly
 
+```
+
+Statistical Information for demographics and clinical information
+
+```{r}
+# Demographics
+library(tidyverse)
+library(finalfit)
+library(Hmisc)
+
+colnames(TNBC_meta)
+
+# Specify explanatory variables of interest
+# Demographics for high and low M1
+library(stringr)
+mrna_meta$StageGroup = str_remove_all(mrna_meta$Stage, "[A-C]")
+mrna_meta$StageGroup[mrna_meta$StageGroup=="unknow"] = "Stage II"
+
+race_TNBC <- read.delim("clinical.tsv")
+race_TNBC = merge(TNBC_meta,race_TNBC[,c("case_submitter_id","race")],by.x="Case.ID",by.y="case_submitter_id")
+race_TNBC = race_TNBC[!duplicated(race_TNBC$Case.ID),]
+race_TNBC= race_TNBC[,c("Sample.ID","race")]
+library()
+
+mrna_meta= merge(mrna_meta,race_TNBC,by="Sample.ID")
+mrna_meta_high=mrna_meta[which(mrna_meta$macro=="High"),]
+mrna_meta_low=mrna_meta[which(mrna_meta$macro=="Low"),]
+
+summary(mrna_meta[which(mrna_meta$macro=="High"),])
+summary(mrna_meta[which(mrna_meta$macro=="Low"),])
+description_Of_TNBC=stat.desc(mrna_meta_high)
+description_Of_TNBC=stat.desc(mrna_meta_low)
+
+describe(mrna_meta_high$StageGroup)
+describe(mrna_meta_low$StageGroup)
+
+describe(mrna_meta_high$race)
+describe(mrna_meta_low$race)
+
+
+
+TNBC_meta$StageGroup = str_remove_all(TNBC_meta$Stage, "[A-C]")
+TNBC_meta$StageGroup[TNBC_meta$StageGroup=="unknow"] = "Stage II" # Assigning stage II for an unassigned sample, based on the ajcc 8th edition
+testing_meta= mrna_meta
+
+explanatory <- c("Age","StageGroup","Time","Event")
+table_TCGA= testing_meta %>% summary_factorlist("macro",explanatory,na_include=TRUE)
+
+
+#statistics
+summary(TNBC_meta)
+description_Of_TNBC=stat.desc(TNBC_meta)
+describe(TNBC_meta$StageGroup)
+check=describe(race_TNBC$race)
+
+sessionInfo()
 ```
 
 Identifying the differentially expressed genes between high and low M1
@@ -667,7 +661,7 @@ Remove the extra letters after each sample name
 ```{r}
 
 colnames(miR_df) = delim_fn(x = colnames(miR_df), n = 0, i = 4)
-saveRDS(miR_df)
+saveRDS(miR_df,"miR_df.rds")
 ```
 
 ```{r}
@@ -804,12 +798,11 @@ library(ComplexHeatmap)
 library(TCGAbiolinks)
 library(dplyr)
 library(EnhancedVolcano)
-library(org.Hs.eg.db)`
+library(org.Hs.eg.db)
 library(minfi)
-library("chAMP")
+#library(chAMP) #it is called by the lower left panel
 library(bumphunter)
-library(minfiData)
-library(sesame)
+
 
 ```
 
@@ -828,7 +821,7 @@ meth_query = GDCquery(
     barcode= colnames(mrna_tpm))
 
 
-GDCdownload(meth_query)
+#GDCdownload(meth_query) has to be activated
 
 #This chunk doesn't need a GDCprepare, otherwise it will normalize the data by itself, which is not needed here. The downloaded data will be read and normalized by chAMP later
     
@@ -848,7 +841,6 @@ match.file.cases$cases = delim_fn(x =match.file.cases$cases, n = 0, i = 4)
 meth_IDs= unique(match.file.cases$cases,TRUE)
 ```
 
-
 Each Sample has two raw files (green and red) corresponding, you can
 connect the sample ID with the filename using the function getresult()
 (already prepared when retrieving the IDs)
@@ -866,7 +858,7 @@ meth_meta$macro= gsub("High",1,meth_meta$macro)
 meth_meta$macro= gsub("Low",0,meth_meta$macro)
 
 # Assign the directory in which the raw data of methylation was downloaded
-champ_directory = # set the directory 
+champ_directory = "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\Methylome\\Raw\\TCGA-BRCA\\harmonized\\DNA_Methylation\\Masked_Intensities"
 
 
 #removing duplicated sample names (The duplicates are present because each patient has two data files (green & red); however both will be read later no worries)
@@ -933,13 +925,11 @@ write.table(hypo_methylated_prom,"Hypo_methylated_prom_0.1.tsv",sep='\t')
 #Volcano Plot
 myDMP_volcano=myDMP[grep("TSS|5'UTR|1stExon",myDMP$feature),]
 library(EnhancedVolcano)
-EnhancedVolcano(myDMP_volcano, x= "deltaBeta", y="adj.P.Val", lab =myDMP_volcano$gene , pCutoff = 5e-2, FCcutoff = 0.1, xlab = bquote("Methylation Difference (beta-value)"),ylab = bquote(~-Log[10] ~ italic(Adj.P)),drawConnectors = TRUE,
-    widthConnectors = 0.75,colConnectors = "grey10",
-  max.overlaps = 15)
-  ggsave("Volcano_plot_meth.png", width = 8, height = 7, limitsize = FALSE)
+saved_volcano_meth=EnhancedVolcano(myDMP_volcano, x= "deltaBeta", y="adj.P.Val", lab =myDMP_volcano$gene , pCutoff = 5e-2, FCcutoff = 0.1, xlab = bquote("Methylation Difference (beta-value)"),ylab = bquote(~-Log[10] ~ italic(Adj.P)),drawConnectors = TRUE,
+    widthConnectors = 0.75,colConnectors = "grey10",max.overlaps = 15)
 
   
-EnhancedVolcano(
+saved_volcano_meth=EnhancedVolcano(
   myDMP_volcano,
   x = "deltaBeta",
   y = "adj.P.Val",
@@ -952,7 +942,7 @@ EnhancedVolcano(
   maxoverlapsConnectors = 5
 )
 
-  ggsave("Volcano_plot_meth_new.png", width = 8, height = 7, limitsize = FALSE)
+  ggsave("Volcano_plot_meth.png", saved_volcano_meth,width = 8, height = 7, limitsize = FALSE)
 #For the PCA
   
   library(DESeq2)
@@ -1105,11 +1095,10 @@ Intersection between 118 based-DEGs and 118 based-DEMs targeted Genes
 
 ```{r}
 # Subsetting certain columns needed from the mirwalk dataframe provided
-
+colnames(activating_DEMs_118_targets)[3]="symbol"
+colnames(silencing_DEMs_118_targets)[3]="symbol"
 activating_DEMs_118_targets=activating_DEMs_118_targets[,c("mirnaid","symbol","validated")]
-colnames(activating_DEMs_118_targets)[2]="symbol"
 silencing_DEMs_118_targets=silencing_DEMs_118_targets[,c("mirnaid","symbol","validated")]
-colnames(silencing_DEMs_118_targets)[2]="symbol"
 
 #removing any duplicate gene target/ This step will not be performed for the regulatory network
 silencing_DEMs_118_targets=silencing_DEMs_118_targets[!duplicated(silencing_DEMs_118_targets$symbol),]
@@ -1281,6 +1270,7 @@ The Mutational Analysis
 library(maftools)
 library(mclust)
 library(ggplot2)
+library(ggstatsplot)
 
 
 # Then we load the .maf files (generated by Radwan as .tsv files but simply change the extension to .maf and it works!)
@@ -1358,7 +1348,9 @@ oncoplot(maf = Low_M1, pathways = "sigpw", gene_mar = 8, fontSize = 0.6, topPath
 dev.off()
 
 ```
+
 Plotting the interactions as venn diagrams
+
 ```{r}
 
 #VennDiagram Work
@@ -1443,6 +1435,11 @@ High_mut_IDs=read.table(file="High_mut_IDs.tsv",sep="\t", col.names = "ID",skip 
 Low_mut_IDs=read.table(file="Low_mut_IDs.tsv",sep="\t", col.names = "ID",skip =1)
 High_mut_IDs$ID=gsub("-01A","-01",High_mut_IDs$ID)
 Low_mut_IDs$ID=gsub("-01A","-01",Low_mut_IDs$ID)
+```
+
+```{r}
+#You can access and download the DDR information from the following website
+#https://gdc.cancer.gov/about-data/publications/PanCan-DDR-2018
 
 setwd("TMB\\MMR")
 MMR_signature <- read_xlsx("TCGA_DDR_Data_Resources.xlsx", sheet = 8, col_names = TRUE, skip = 3)
@@ -1450,6 +1447,9 @@ MMR_signature_HighM1 = merge(x=MMR_signature[,c(2,5:48)],y=High_mut_IDs, by.x="T
 MMR_signature_LowM1 = merge(x=MMR_signature[,c(2,5:48)],y=Low_mut_IDs, by.x="TCGA sample barcode", by.y="ID")
 
 data_mmr=rbind(cbind(status="high_m1",MMR_signature_HighM1),cbind(status="low_m1",MMR_signature_LowM1))
+```
+
+```{r}
 setwd("TMB\\MMR\\Plots")
 for(i in c(2:45)){
 formula <- substitute(ggbetweenstats(data = data_mmr, x =status, y = y_var, type = "np"),list(y_var = colnames(MMR_signature_HighM1)[i]))
