@@ -119,12 +119,9 @@ mrna_query = GDCquery(project = "TCGA-BRCA",
                       experimental.strategy = "RNA-Seq",
                        barcode=TNBC_meta$Sample.ID) #This has all 154 samples
 
-GDCdownload(mrna_query,directory=
-                      "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
-mrna_df=GDCprepare(mrna_query, directory=
-                      "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\RNA_SEQ")
-#GDCdownload(mrna_query)
-#mrna_df=GDCprepare(mrna_query)
+
+GDCdownload(mrna_query)
+mrna_df=GDCprepare(mrna_query)
 
 ```
 
@@ -858,7 +855,7 @@ meth_meta$macro= gsub("High",1,meth_meta$macro)
 meth_meta$macro= gsub("Low",0,meth_meta$macro)
 
 # Assign the directory in which the raw data of methylation was downloaded
-champ_directory = "T:\\Programming\\Data\\R\\TNBC_Confirmed_Paper\\Methylome\\Raw\\TCGA-BRCA\\harmonized\\DNA_Methylation\\Masked_Intensities"
+champ_directory = "Set your directory, please"
 
 
 #removing duplicated sample names (The duplicates are present because each patient has two data files (green & red); however both will be read later no worries)
@@ -1024,7 +1021,6 @@ allsig[is.na(allsig)]=0
 meth_sigCounts= allsig #choose only the columns with sample counts
 library(gplots)
 heatmap_obj=pheatmap::pheatmap(meth_sigCounts, scale = "row", show_rownames = F , cluster_cols = F, cluster_rows = F , annotation_col = annotation , show_colnames = F , main = "Differentially Methylated Probes in TNBC based on M1",col = bluered(100))
-setwd("T://Programming//Data//R//working directory//Final Version//Volcano_Heat")
 ggsave("heatmap_plot_Lf0.6_DMGs.png",heatmap_obj, width = 10, height = 6)
 
 library(ggplot2)
