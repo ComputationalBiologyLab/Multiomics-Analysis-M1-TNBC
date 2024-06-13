@@ -1396,11 +1396,11 @@ dir.create("TMB\\Immunome",recursive=TRUE)
 setwd("TMB\\Immunome")
 
 #Reading files adapted from immunome for the correpsonding high/low M1 samples
-Het_LowM1=read.table ("Heterogeneity low M1.tsv", sep= "\t", header=T)
-Het_HighM1= read.table ("Heterogeneity high M1.tsv", sep= "\t", header=T)
+Het_LowM1=read.table ("Heterogeneity_low M1.tsv", sep= "\t", header=T)
+Het_HighM1= read.table ("Heterogeneity_high M1.tsv", sep= "\t", header=T)
 
-IPS_HighM1=read.table ("immunotherapy scores high M1.tsv", sep= "\t", header=T)
-IPS_LowM1= read.table ("immunotherapy scores low M1.tsv", sep= "\t", header=T)
+IPS_HighM1=read.table ("immunotherapyscores_high M1.tsv", sep= "\t", header=T)
+IPS_LowM1= read.table ("immunotherapyscores_low M1.tsv", sep= "\t", header=T)
 
 data_het=rbind(cbind(status="high_m1",Het_HighM1),cbind(status="low_m1",Het_LowM1))
 
