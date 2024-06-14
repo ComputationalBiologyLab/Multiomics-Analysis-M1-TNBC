@@ -1,5 +1,5 @@
 ---
-title: GSE19 & GSE17 Notebook"
+title: GSE194040 Notebook"
 output: GSE194040
 ---
 
@@ -109,8 +109,8 @@ for(i in 2:length(colnames(data_immune))){
 }
 
 # Separate data based on clinical status for further analysis
-data_immune_pcr <- data_immune[data_immune$status == 1,]
-data_immune_nonpcr <- data_immune[data_immune$status == 0,]
+data_immune_pcr <- data_immune[data_immune$status == "PCR",]
+data_immune_nonpcr <- data_immune[data_immune$status == "non-PCR",]
 
 # Perform statistical tests to compare gene expression between clinical groups
 result_of_test_immune_gse19 <- data.frame(matrix(NA, nrow = 1, ncol = 2))
@@ -148,8 +148,8 @@ consistent_ids <- all(paste0("X", meta_GSE19_pac$`patient id:ch1`) == rownames(e
 data_pac_gse19 <- cbind(status = meta_GSE19_pac$`pcr:ch1`, exprs_GSE19_pac_selected)
 
 # Separate data based on clinical status for further analysis
-data_pac_pcr_gse19 <- data_pac_gse19[data_pac_gse19$status == 1,]
-data_pac_nonpcr_gse19 <- data_pac_gse19[data_pac_gse19$status == 0,]
+data_pac_pcr_gse19 <- data_pac_gse19[data_pac_gse19$status == "PCR",]
+data_pac_nonpcr_gse19 <- data_pac_gse19[data_pac_gse19$status == "non-PCR",]
 
 # Perform statistical tests to compare gene expression between clinical groups in the Paclitaxel treatment group
 result_of_test_pac_gse19 <- data.frame(matrix(NA, nrow = 1, ncol = 2))
@@ -203,8 +203,8 @@ ciber_immune_gse19 = cbind(status = meta_GSE19_immune$`pcr:ch1`, CIBERSORT_GSE19
 ciber_pac_gse19 = cbind(status = meta_GSE19_pac$`pcr:ch1`, CIBERSORT_GSE19_pac)
 
 # Apply Mann-Whitney test for PAC samples
-ciber_pac_pcr_gse19 = ciber_pac_gse19[ciber_pac_gse19$status == 1,]
-ciber_pac_nonpcr_gse19 = ciber_pac_gse19[ciber_pac_gse19$status == 0,]
+ciber_pac_pcr_gse19 = ciber_pac_gse19[ciber_pac_gse19$status == "PCR",]
+ciber_pac_nonpcr_gse19 = ciber_pac_gse19[ciber_pac_gse19$status == "non-PCR",]
 result_of_cibertest_pac_gse19 = data.frame(matrix(NA, nrow = 1, ncol = 2))
 
 # Loop through each CIBERSORT feature and perform Mann-Whitney test for PAC samples
@@ -216,8 +216,8 @@ for(i in 3:length(colnames(ciber_pac_pcr_gse19))){
 }
 
 # Apply Mann-Whitney test for immune samples
-ciber_immune_pcr_gse19 = ciber_immune_gse19[ciber_immune_gse19$status == 1,]
-ciber_immune_nonpcr_gse19 = ciber_immune_gse19[ciber_immune_gse19$status == 0,]
+ciber_immune_pcr_gse19 = ciber_immune_gse19[ciber_immune_gse19$status == "PCR",]
+ciber_immune_nonpcr_gse19 = ciber_immune_gse19[ciber_immune_gse19$status == "non-PCR",]
 result_of_cibertest_immune_gse19 = data.frame(matrix(NA, nrow = 1, ncol = 2))
 
 # Loop through each CIBERSORT feature and perform Mann-Whitney test for immune samples
@@ -294,235 +294,3 @@ write.table(result_of_test_pac_gse19,'result_of_test_pac_gse19.tsv',sep='\t')
 ```
 
 
-GSE173839
-
-
-
-
-```{r}
-# Preparing MetaData
-
-# Retrieve the GEO dataset GSE173839
-GSE173839 = getGEO("GSE173839")
-
-# Extract metadata from the GEO dataset
-meta_GSE17 = GSE173839[["GSE173839_series_matrix.txt.gz"]]@phenoData@data
-
-# Filter the metadata to include only samples with HER2 and HR status as 0
-meta_GSE17 = filter(meta_GSE17, `her2:ch1` == 0 , `hr:ch1` == 0)
-
-# Split the metadata into immune and control (PAC) groups based on the treatment arm
-meta_GSE17_immune = meta_GSE17[grep("durv", meta_GSE17$`arm:ch1`),]
-meta_GSE17_pac = meta_GSE17[grep("control", meta_GSE17$`arm:ch1`),]
-
-# Extract gene annotation information from the GEO dataset
-gse17_gene_annotation = GSE173839[["GSE173839_series_matrix.txt.gz"]]@featureData@data
-
-
-# Preparing Expression Data
-
-# Extract expression data from the GEO dataset
-exprs_GSE17 = GSE173839[["GSE173839_series_matrix.txt.gz"]]@assayData[["exprs"]]
-
-# Ensure that the probe IDs are aligned with gene names
-all(rownames(exprs_GSE17) == gse17_gene_annotation$ID)
-
-# Rename the rows of the expression data with gene names
-rownames(exprs_GSE17) = gse17_gene_annotation$GeneName
-
-# Convert expression data to a data frame
-exprs_GSE17 = as.data.frame(exprs_GSE17)
-
-# Remove rows with missing or duplicate values
-exprs_GSE17 = exprs_GSE17[!(rownames(exprs_GSE17) == ""), , drop = FALSE]
-exprs_GSE17 = exprs_GSE17[!grepl("^AG_", rownames(exprs_GSE17)),]
-exprs_GSE17 = exprs_GSE17[!(duplicated(rownames(exprs_GSE17))), , drop = FALSE]
-exprs_GSE17 = na.omit(exprs_GSE17)
-
-# Normalize expression data using quantile normalization
-exprs_GSE17 = normalize.quantiles(as.matrix(exprs_GSE17), keep.names = TRUE)
-
-# Extract expression data for immune and control (PAC) groups
-exprs_GSE17_immune = as.data.frame(exprs_GSE17[, match(rownames(meta_GSE17_immune), colnames(exprs_GSE17))])
-exprs_GSE17_pac = as.data.frame(exprs_GSE17[, match(rownames(meta_GSE17_pac), colnames(exprs_GSE17))])
-
-```
-
-
-
-```{r}
-# Merge validated genes with expression data for PAC samples
-exprs_GSE17_pac_selected = merge(x = validated_genes, y = exprs_GSE17_pac, by.x = "Gene", by.y = 0)
-
-# Remove the first column (gene names) from the merged data and set gene names as row names
-exprs_GSE17_pac_selected <- exprs_GSE17_pac_selected[, -1, drop = FALSE] |> `rownames<-`(exprs_GSE17_pac_selected[,"Gene"])
-
-# Transpose the data frame
-exprs_GSE17_pac_selected = data.frame(t(exprs_GSE17_pac_selected))
-
-# Handle missing values in the 'pcr:ch1' column of the metadata for PAC samples
-meta_GSE17_pac$`pcr:ch1`[grep(-1, meta_GSE17_pac$`pcr:ch1`)] = NA
-
-# Combine the PCR status information with the selected expression data for PAC samples
-data_pac_gse17 = cbind(status = meta_GSE17_pac$`pcr:ch1`, exprs_GSE17_pac_selected)
-
-# Split the data into PCR-positive and PCR-negative groups
-data_pac_gse17_pcr = data_pac_gse17[data_pac_gse17$status == 1,]
-data_pac_gse17_nonpcr = data_pac_gse17[data_pac_gse17$status == 0,]
-
-# Initialize a data frame to store the results of statistical tests
-result_of_test_pac <- data.frame(matrix(NA, nrow = 1, ncol = 2))
-
-# Perform statistical tests (Wilcoxon rank sum test) for each gene
-for(i in 2:length(colnames(data_pac_gse17))){
-  whitney_output <- wilcox.test(data_pac_gse17_pcr[,i], data_pac_gse17_nonpcr[,i], paired = FALSE)
-  result_of_test_pac[i-1,1] = colnames(data_pac_gse17_pcr)[i]  # Store the gene name
-  result_of_test_pac[i-1,2] = whitney_output$p.value           # Store the p-value
-  # Additional columns can be added for other statistical measures
-}
-
-# Print the results of the statistical tests
-print(result_of_test_pac)
-
-dir.create("GSE17\\Plots\\pac",recursive=TRUE)
-for(i in 2:length(colnames(data_pac_gse17))){
-if(i==2) {setwd("GSE17\\Plots\\pac")}
-formula <- substitute(ggbetweenstats(data = data_pac_gse17, x =status, y = y_var, type = "np"),list(y_var =colnames(data_pac_gse17)[i]))
-eval(formula)
-colnames(data_pac_gse17)[i] = gsub("/", ".",colnames(data_pac_gse17)[i])
- plot_filename <-paste("plots",colnames(data_pac_gse17)[i], ".png", sep="")
-ggsave(plot_filename)
-}
-```
-
-
-
-
-```{r}
-# Merge validated genes with expression data for immune samples
-exprs_GSE17_immune_selected = merge(x = validated_genes, y = exprs_GSE17_immune, by.x = "Gene", by.y = 0)
-
-# Remove the first column (gene names) from the merged data and set gene names as row names
-exprs_GSE17_immune_selected <- exprs_GSE17_immune_selected[, -1, drop = FALSE] |> `rownames<-`(exprs_GSE17_immune_selected[,"Gene"])
-
-# Transpose the data frame
-exprs_GSE17_immune_selected = data.frame(t(exprs_GSE17_immune_selected))
-
-# Handle missing values in the 'pcr:ch1' column of the metadata for immune samples
-meta_GSE17_immune$`pcr:ch1`[grep(-1, meta_GSE17_immune$`pcr:ch1`)] = NA
-
-# Combine the PCR status information with the selected expression data for immune samples
-data_immune_gse17 = cbind(status = meta_GSE17_immune$`pcr:ch1`, exprs_GSE17_immune_selected)
-
-# Split the data into PCR-positive and PCR-negative groups
-data_immune_gse17_pcr = data_immune_gse17[data_immune_gse17$status == 1,]
-data_immune_gse17_nonpcr = data_immune_gse17[data_immune_gse17$status == 0,]
-
-# Initialize a data frame to store the results of statistical tests
-result_of_test_immune <- data.frame(matrix(NA, nrow = 1, ncol = 2))
-
-# Perform statistical tests (Wilcoxon rank sum test) for each gene
-for(i in 2:length(colnames(data_immune_gse17))){
-  whitney_output <- wilcox.test(data_immune_gse17_pcr[,i], data_immune_gse17_nonpcr[,i], paired = FALSE)
-  result_of_test_immune[i-1,1] = colnames(data_immune_gse17_pcr)[i]  # Store the gene name
-  result_of_test_immune[i-1,2] = whitney_output$p.value           # Store the p-value
-  # Additional columns can be added for other statistical measures
-}
-
-# Print the results of the statistical tests
-print(result_of_test_immune)
-
-
-dir.create("GSE17\\Plots\\immune",recursive=TRUE)
-# Generate plots for each gene using ggbetweenstats
-for(i in 2:length(colnames(data_immune_gse17))){
-  if(i==2){setwd("GSE17\\Plots\\immune")}
-  formula <- substitute(ggbetweenstats(data = data_immune_gse17, x = status, y = y_var, type = "np"), list(y_var = colnames(data_immune_gse17)[i]))
-  eval(formula)
-  colnames(data_immune_gse17)[i] = gsub("/", ".", colnames(data_immune_gse17)[i])
-  plot_filename <- paste("plots", colnames(data_immune_gse17)[i], ".png", sep = "")
-  ggsave(plot_filename)
-}
-
-```
-
-
-```{r}
-# Read CIBERSORT results from a CSV file into a data frame
-CIBERSORT_GSE17 = read.table("CIBERSORTx_GSE17_quantilenorm_nobatch.csv", sep = ',', header = TRUE)
-
-# Subset CIBERSORT data for immune samples based on patient IDs
-CIBERSORT_GSE17_immune = CIBERSORT_GSE17[match(rownames(meta_GSE17_immune), CIBERSORT_GSE17$Mixture),]
-# Subset CIBERSORT data for pac samples based on patient IDs
-CIBERSORT_GSE17_pac = CIBERSORT_GSE17[match(rownames(meta_GSE17_pac), CIBERSORT_GSE17$Mixture),]
-
-# Check if the order of patient IDs matches between metadata and CIBERSORT results for both immune and pac samples
-all(meta_GSE17_immune$`patient id:ch1` == CIBERSORT_GSE17_immune$Mixture)
-all(meta_GSE17_pac$`patient id:ch1` == CIBERSORT_GSE17_pac$Mixture)
-
-# Combine PCR status information from metadata with CIBERSORT results for immune samples, removing rows with missing values
-ciber_immune_gse17 = na.omit(cbind(status = meta_GSE17_immune$`pcr:ch1`, CIBERSORT_GSE17_immune))
-# Combine PCR status information from metadata with CIBERSORT results for pac samples, removing rows with missing values
-ciber_pac_gse17 = na.omit(cbind(status = meta_GSE17_pac$`pcr:ch1`, CIBERSORT_GSE17_pac))
-
-# Extract PCR-positive samples for pac
-ciber_pac_pcr_gse17 = ciber_pac_gse17[ciber_pac_gse17$status == 1,]
-# Extract PCR-negative samples for pac
-ciber_pac_nonpcr_gse17 = ciber_pac_gse17[ciber_pac_gse17$status == 0,]
-
-# Initialize a data frame to store statistical test results for pac samples
-result_of_cibertest_pac_gse17 <- data.frame(matrix(NA, nrow = 1, ncol = 2))
-
-# Perform Mann-Whitney U test for each gene in pac samples
-for(i in 3:length(colnames(ciber_pac_pcr_gse17))){
-  whitney_output <- wilcox.test(ciber_pac_pcr_gse17[,i], ciber_pac_nonpcr_gse17[,i], paired = FALSE)
-  result_of_cibertest_pac_gse17[i-2,1] = colnames(ciber_pac_pcr_gse17)[i]  # Store gene name
-  result_of_cibertest_pac_gse17[i-2,2] = whitney_output$p.value           # Store p-value
-  # Additional columns can be added for other statistical measures
-}
-
-# Extract PCR-positive samples for immune
-ciber_immune_pcr_gse17 = ciber_immune_gse17[ciber_immune_gse17$status == 1,]
-# Extract PCR-negative samples for immune
-ciber_immune_nonpcr_gse17 = ciber_immune_gse17[ciber_immune_gse17$status == 0,]
-
-# Initialize a data frame to store statistical test results for immune samples
-result_of_cibertest_immune_gse17 <- data.frame(matrix(NA, nrow = 1, ncol = 2))
-
-# Perform Mann-Whitney U test for each gene in immune samples
-for(i in 3:length(colnames(ciber_immune_pcr_gse17))){
-  whitney_output <- wilcox.test(ciber_immune_pcr_gse17[,i], ciber_immune_nonpcr_gse17[,i], paired = FALSE)
-  result_of_cibertest_immune_gse17[i-2,1] = colnames(ciber_immune_pcr_gse17)[i]  # Store gene name
-  result_of_cibertest_immune_gse17[i-2,2] = whitney_output$p.value           # Store p-value
-  # Additional columns can be added for other statistical measures
-}
-
-
-```
-
-Plots to visualize both the significance of immune cells in pac and immune groups
-```{r}
-
-dir.create("GSE17\\Plots\\immune\\cibersort",recursive=TRUE)
-for(i in 3:length(colnames(ciber_immune_gse17))){
-if(i==3){setwd("GSE17\\Plots\\immune\\cibersort")}
-formula <- substitute(ggbetweenstats(data = ciber_immune_gse17, x =status, y = y_var, type = "np"),list(y_var =colnames(ciber_immune_gse17)[i]))
-eval(formula)
-colnames(ciber_immune_gse17)[i] = gsub("/", ".",colnames(ciber_immune_gse17)[i])
- plot_filename <-paste("plots",colnames(ciber_immune_gse17)[i], ".png", sep="")
-ggsave(plot_filename)
-}
-
-
-dir.create("GSE17\\Plots\\pac\\cibersort",recursive=TRUE)
-for(i in 3:length(colnames(ciber_pac_gse17))){
-if(i==3){setwd("GSE17\\Plots\\pac\\cibersort")}
-formula <- substitute(ggbetweenstats(data = ciber_pac_gse17, x =status, y = y_var, type = "np"),list(y_var =colnames(ciber_pac_gse17)[i]))
-eval(formula)
-colnames(ciber_pac_gse17)[i] = gsub("/", ".",colnames(ciber_pac_gse17)[i])
- plot_filename <-paste("plots",colnames(ciber_pac_gse17)[i], ".png", sep="")
-ggsave(plot_filename)
-}
-
-
-```
