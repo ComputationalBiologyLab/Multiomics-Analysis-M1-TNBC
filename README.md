@@ -3,7 +3,7 @@
 1) First file to access is the Multiomics_TCGA_Analysis, in which you can download,preprocess, and analyse TCGA-TNBC multi-omics
 2) Second file to access is the Survival_Analysis for TCGA-TNBC and GSE58812, in which you can evaluate the prognostic significance of immune cells and differentially abundant genes
 3) Third file to access is the GSE194040_analysis, in which you can evaluate the effect of prognostic genes and immune cells on the immunotherapy response
-![Uploading Supplementary Figures TME.png…]()
+![Supplementary Figures TME](https://github.com/ComputationalBiologyLab/Multiomics-Analysis-M1-TNBC/assets/97539613/01cab223-0168-4998-8b06-97cc66c66a9a)
 
 
 #  Supplementary Files (9 files only)
