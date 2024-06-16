@@ -6,7 +6,7 @@
 ![image](https://github.com/ComputationalBiologyLab/Multiomics-Analysis-M1-TNBC/assets/97539613/463f1139-676c-4cce-97ab-210213a92451)
 
 
-#  Supplementary Files (9 files only)
+#  Input Files (9 files only)
 1) TNBC_immunogenomics and Clinical.tsv are needed in the first notebook as it has clinical data for the TCGA-TNBC
 2) Activated/Silenced DEMTs_3(all).csv are needed in the first notebook as they contain the miR-targets and are adapted from miRwalk
 3) 2x Heterogeneity, 2x Immunotherapy scores for genomic analysis of the TCGA-TNBC
